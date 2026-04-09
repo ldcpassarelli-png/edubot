@@ -7,12 +7,7 @@ import os
 import logging
 import hashlib
 import hmac
-from fastapi import APIRouter, Request, HTTPException, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-
-from app.models.connection import get_db
-from app.models.database import Aluno
+from fastapi import APIRouter, Request, HTTPException
 
 logger = logging.getLogger("edubot.webhook")
 
@@ -21,6 +16,7 @@ router = APIRouter()
 # Configurações do WhatsApp
 VERIFY_TOKEN = os.getenv("WA_VERIFY_TOKEN", "edubot-verify-token")
 WA_APP_SECRET = os.getenv("WA_APP_SECRET", "")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 
 
 # ============================================================
@@ -48,6 +44,52 @@ async def verificar_webhook(request: Request):
 
 
 # ============================================================
+# Verificação de assinatura HMAC
+# ============================================================
+
+async def _verificar_assinatura(request: Request) -> None:
+    """
+    Verifica a assinatura HMAC-SHA256 enviada pela Meta.
+    Garante que a requisição realmente veio do WhatsApp.
+
+    Em development sem WA_APP_SECRET: loga warning e deixa passar.
+    Em production sem WA_APP_SECRET: bloqueia (defesa em profundidade).
+    Com WA_APP_SECRET configurado: valida a assinatura.
+    """
+    if not WA_APP_SECRET:
+        if ENVIRONMENT == "production":
+            logger.error("🚨 WA_APP_SECRET não configurado em produção! Requisição bloqueada.")
+            raise HTTPException(status_code=401, detail="Servidor mal configurado.")
+        logger.warning(
+            "⚠️ Webhook rodando SEM verificação de assinatura — modo desenvolvimento. "
+            "Em produção, configure WA_APP_SECRET."
+        )
+        return
+
+    # WA_APP_SECRET está configurado — verificar assinatura
+    signature = request.headers.get("x-hub-signature-256")
+
+    if not signature:
+        logger.warning("🚨 Requisição sem header x-hub-signature-256 — possível ataque.")
+        raise HTTPException(status_code=401, detail="Assinatura ausente.")
+
+    if not signature.startswith("sha256="):
+        logger.warning(f"🚨 Formato de assinatura inválido: {signature[:20]}")
+        raise HTTPException(status_code=401, detail="Formato de assinatura inválido.")
+
+    body = await request.body()
+    expected = "sha256=" + hmac.new(
+        WA_APP_SECRET.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected):
+        logger.warning("🚨 Assinatura HMAC inválida — requisição rejeitada.")
+        raise HTTPException(status_code=401, detail="Assinatura inválida.")
+
+
+# ============================================================
 # Receber mensagens (POST) — toda mensagem chega aqui
 # ============================================================
 
@@ -57,19 +99,7 @@ async def receber_mensagem(request: Request):
     Recebe mensagens do WhatsApp Business API.
     Processa texto, documentos (PDF) e imagens.
     """
-    # Validar assinatura (segurança)
-    if WA_APP_SECRET:
-        signature = request.headers.get("x-hub-signature-256", "")
-        body = await request.body()
-        expected = "sha256=" + hmac.new(
-            WA_APP_SECRET.encode(),
-            body,
-            hashlib.sha256,
-        ).hexdigest()
-
-        if not hmac.compare_digest(signature, expected):
-            logger.warning("⚠️ Assinatura inválida no webhook!")
-            raise HTTPException(status_code=403, detail="Assinatura inválida.")
+    await _verificar_assinatura(request)
 
     # Parsear payload
     payload = await request.json()

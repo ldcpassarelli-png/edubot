@@ -29,9 +29,22 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("🎓 EduBot iniciando...")
 
+    environment = os.getenv("ENVIRONMENT", "development")
+    logger.info(f"Ambiente: {environment}")
+
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
         logger.warning("⚠️ ANTHROPIC_API_KEY não configurada!")
+
+    # Em produção, WA_APP_SECRET é obrigatório — sem ele, qualquer pessoa
+    # pode enviar webhooks falsos fingindo ser a Meta/WhatsApp
+    if environment == "production" and not os.getenv("WA_APP_SECRET", ""):
+        raise RuntimeError(
+            "ERRO FATAL: WA_APP_SECRET não está configurado. "
+            "Em produção, essa variável é obrigatória para verificar "
+            "a autenticidade das mensagens do WhatsApp. "
+            "Configure WA_APP_SECRET ou mude ENVIRONMENT para 'development'."
+        )
 
     # Inicializa parser engine (compartilhado entre requests)
     app.state.parser = ParserEngine(
