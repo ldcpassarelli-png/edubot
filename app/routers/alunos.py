@@ -14,8 +14,9 @@ from sqlalchemy.orm import selectinload
 
 from app.models.connection import get_db
 from app.models.database import Aluno, Materia, EventoAcademico
+from app.auth import verify_api_key
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
 # ============================================================

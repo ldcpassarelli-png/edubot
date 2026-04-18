@@ -46,6 +46,14 @@ async def lifespan(app: FastAPI):
             "Configure WA_APP_SECRET ou mude ENVIRONMENT para 'development'."
         )
 
+    if environment == "production" and not os.getenv("INTERNAL_API_KEY", ""):
+        raise RuntimeError(
+            "ERRO FATAL: INTERNAL_API_KEY não está configurada. "
+            "Em produção, essa variável é obrigatória para autenticar "
+            "endpoints administrativos (/alunos/*, /parser/*). "
+            "Configure INTERNAL_API_KEY ou mude ENVIRONMENT para 'development'."
+        )
+
     # Inicializa parser engine (compartilhado entre requests)
     app.state.parser = ParserEngine(
         api_key=api_key,

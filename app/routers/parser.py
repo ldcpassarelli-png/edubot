@@ -3,11 +3,12 @@ EduBot — Router de parsing de planos de aula
 Endpoints para receber texto, PDF ou imagem e retornar dados estruturados.
 """
 
-from fastapi import APIRouter, Request, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, Request, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from typing import Optional
+from app.auth import verify_api_key
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
 # ============================================================
