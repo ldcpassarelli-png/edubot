@@ -1,13 +1,31 @@
 """
-EduBot — Webhook do WhatsApp Business API
-Recebe mensagens dos alunos e processa (texto, PDF, imagem).
+EduBot — Webhook do WhatsApp Business API.
+
+Fluxo:
+  1. Meta faz POST em /webhook
+  2. HMAC valida assinatura (Frente 1)
+  3. Extrai mensagem do payload (telefone + tipo + conteúdo)
+  4. Delega pro serviço de onboarding (máquina de estados)
+  5. Envia resposta de volta pro aluno via WhatsApp API
+  6. Retorna 200 pro Meta (sempre — senão ele reenvia)
+
+Tipos suportados hoje:
+  - text      → trata como resposta no fluxo de onboarding
+  - document  → aceita apenas PDF; outros tipos recebem mensagem explicativa
+
+Imagem, áudio, sticker, vídeo e localização NÃO são suportados neste escopo.
+Eles recebem resposta gentil pedindo PDF.
 """
 
 import os
 import logging
 import hashlib
 import hmac
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.connection import get_db
+from app.services import onboarding, whatsapp
 
 logger = logging.getLogger("edubot.webhook")
 
@@ -94,135 +112,152 @@ async def _verificar_assinatura(request: Request) -> None:
 # ============================================================
 
 @router.post("/webhook")
-async def receber_mensagem(request: Request):
+async def receber_mensagem(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
     """
     Recebe mensagens do WhatsApp Business API.
-    Processa texto, documentos (PDF) e imagens.
+
+    Sempre retorna 200 — se retornarmos erro, Meta reenviará a mensagem,
+    causando processamento duplicado. Erros internos ficam nos logs.
     """
     await _verificar_assinatura(request)
 
-    # Parsear payload
     payload = await request.json()
 
     try:
-        # Extrair dados da mensagem
-        entry = payload.get("entry", [])
-        if not entry:
+        mensagem = _extrair_mensagem(payload)
+        if mensagem is None:
+            # Não era mensagem de aluno (pode ser status update: delivered, read)
             return {"status": "ok"}
 
-        changes = entry[0].get("changes", [])
-        if not changes:
+        telefone = mensagem["telefone"]
+        tipo = mensagem["tipo"]
+        conteudo = mensagem["conteudo"]
+
+        logger.info(f"📩 Mensagem recebida de {telefone}: tipo={tipo}")
+
+        # Tipos fora de escopo hoje — responde mas não processa
+        if tipo in ("image", "audio", "video", "sticker", "location"):
+            await whatsapp.enviar_mensagem_texto(
+                telefone,
+                "Por enquanto só consigo ler *PDF* e texto. 📎\n"
+                "Pode me mandar o plano de aula como arquivo PDF?",
+            )
             return {"status": "ok"}
 
-        value = changes[0].get("value", {})
-        messages = value.get("messages", [])
-
-        if not messages:
-            # Pode ser status update (delivered, read) — ignorar
+        # Documento não-PDF (ex: docx, xlsx)
+        if tipo == "document" and "pdf" not in conteudo.get("mime_type", "").lower():
+            logger.info(
+                f"Documento não-PDF ignorado de {telefone}: "
+                f"{conteudo.get('mime_type')}"
+            )
+            await whatsapp.enviar_mensagem_texto(
+                telefone,
+                "Esse tipo de arquivo eu ainda não leio. 😕\n"
+                "Por favor, me manda o plano de aula em *PDF*.",
+            )
             return {"status": "ok"}
 
-        mensagem = messages[0]
-        telefone = mensagem.get("from", "")  # formato: 5511999999999
-        msg_type = mensagem.get("type", "")
-        msg_id = mensagem.get("id", "")
+        # Tipo suportado (text ou document/pdf) — delega pro onboarding
+        resposta = await onboarding.processar_mensagem(
+            telefone=telefone,
+            tipo=tipo,
+            conteudo=conteudo,
+            parser=request.app.state.parser,
+            db=db,
+        )
 
-        logger.info(f"📩 Mensagem recebida de {telefone}: tipo={msg_type}")
-
-        # ----------------------------------------------------------
-        # Processar por tipo de mensagem
-        # ----------------------------------------------------------
-
-        if msg_type == "text":
-            texto = mensagem.get("text", {}).get("body", "")
-            await _processar_texto(telefone, texto, msg_id, request)
-
-        elif msg_type == "document":
-            doc = mensagem.get("document", {})
-            mime_type = doc.get("mime_type", "")
-            media_id = doc.get("id", "")
-            if "pdf" in mime_type:
-                await _processar_documento(telefone, media_id, msg_id, request)
-            else:
-                logger.info(f"Documento ignorado: {mime_type}")
-
-        elif msg_type == "image":
-            img = mensagem.get("image", {})
-            media_id = img.get("id", "")
-            mime_type = img.get("mime_type", "image/jpeg")
-            await _processar_imagem(telefone, media_id, mime_type, msg_id, request)
-
-        else:
-            logger.info(f"Tipo de mensagem ignorado: {msg_type}")
+        if resposta:
+            await whatsapp.enviar_mensagem_texto(telefone, resposta)
 
     except Exception as e:
+        # Capturar tudo pra garantir 200 pro Meta.
+        # Logamos exc_info pra diagnosticar via Railway logs.
         logger.error(f"Erro ao processar webhook: {e}", exc_info=True)
 
-    # Sempre retornar 200 pro WhatsApp não reenviar
     return {"status": "ok"}
 
 
 # ============================================================
-# Handlers internos
+# Helpers
 # ============================================================
 
-async def _processar_texto(telefone: str, texto: str, msg_id: str, request: Request):
-    """Processa mensagem de texto do aluno."""
-    texto_lower = texto.strip().lower()
+def _extrair_mensagem(payload: dict) -> dict | None:
+    """
+    Extrai dados úteis do payload do Meta.
 
-    # Comandos de onboarding
-    if texto_lower in ("oi", "olá", "ola", "hey", "começar", "start"):
-        logger.info(f"Onboarding iniciado para {telefone}")
-        # TODO: Enviar mensagem de boas-vindas
-        # TODO: Criar/buscar aluno no banco
-        return
+    Estrutura esperada:
+        {
+          "entry": [{
+            "changes": [{
+              "value": {
+                "messages": [{
+                  "from": "5511999999999",
+                  "type": "text" | "document" | "image" | ...,
+                  "text": {"body": "..."},
+                  "document": {"id": "...", "mime_type": "..."},
+                  ...
+                }]
+              }
+            }]
+          }]
+        }
 
-    # Confirmação pós-parsing
-    if texto_lower in ("sim", "s", "yes", "confirma", "ok"):
-        logger.info(f"Confirmação recebida de {telefone}")
-        # TODO: Salvar eventos no banco
-        return
+    Retorna dict com {telefone, tipo, conteudo} ou None se:
+    - payload vazio/malformado
+    - não há messages (ex: é status update de delivered/read)
+    """
+    entry = payload.get("entry", [])
+    if not entry:
+        return None
 
-    if texto_lower in ("não", "nao", "n", "no"):
-        logger.info(f"Rejeição recebida de {telefone}")
-        # TODO: Pedir que envie novamente
-        return
+    changes = entry[0].get("changes", [])
+    if not changes:
+        return None
 
-    # Texto longo = possível plano de aula colado
-    if len(texto) > 200:
-        logger.info(f"Texto longo recebido de {telefone} — tentando parsear")
-        parser = request.app.state.parser
-        resultado = await parser.parsear_texto(texto)
+    value = changes[0].get("value", {})
+    messages = value.get("messages", [])
 
-        if resultado.sucesso:
-            resumo = parser.gerar_resumo_confirmacao(resultado.dados)
-            logger.info(f"Parser OK: {resultado.dados.materia}")
-            # TODO: Enviar resumo via WhatsApp
-            # TODO: Armazenar resultado temporariamente (Redis)
-        else:
-            logger.warning(f"Parser falhou: {resultado.erro}")
-            # TODO: Enviar mensagem de erro
-        return
+    if not messages:
+        # Status update (delivered, read, failed) — não é mensagem do aluno
+        return None
 
-    # Pergunta do chat interativo
-    logger.info(f"Pergunta do chat: {texto[:100]}")
-    # TODO: Processar com engine conversacional
-    # TODO: Buscar contexto do aluno no banco
-    # TODO: Responder via WhatsApp
+    mensagem = messages[0]
+    telefone = mensagem.get("from", "")
+    tipo = mensagem.get("type", "")
 
+    if not telefone or not tipo:
+        logger.warning(f"Mensagem sem telefone ou tipo: {mensagem}")
+        return None
 
-async def _processar_documento(telefone: str, media_id: str, msg_id: str, request: Request):
-    """Processa documento PDF enviado pelo aluno."""
-    logger.info(f"PDF recebido de {telefone}, media_id={media_id}")
-    # TODO: Baixar PDF via Media API do WhatsApp
-    # TODO: Parsear com parser.parsear_pdf()
-    # TODO: Enviar resumo de confirmação
+    # Montar conteúdo baseado no tipo
+    conteudo: dict = {}
 
+    if tipo == "text":
+        conteudo = {"texto": mensagem.get("text", {}).get("body", "")}
 
-async def _processar_imagem(
-    telefone: str, media_id: str, mime_type: str, msg_id: str, request: Request
-):
-    """Processa foto de plano de aula."""
-    logger.info(f"Imagem recebida de {telefone}, media_id={media_id}")
-    # TODO: Baixar imagem via Media API do WhatsApp
-    # TODO: Parsear com parser.parsear_imagem()
-    # TODO: Enviar resumo de confirmação
+    elif tipo == "document":
+        doc = mensagem.get("document", {})
+        conteudo = {
+            "media_id": doc.get("id", ""),
+            "mime_type": doc.get("mime_type", ""),
+            "filename": doc.get("filename", ""),
+        }
+
+    elif tipo == "image":
+        img = mensagem.get("image", {})
+        conteudo = {
+            "media_id": img.get("id", ""),
+            "mime_type": img.get("mime_type", "image/jpeg"),
+        }
+
+    # Outros tipos (audio, video, sticker, location) ficam com conteudo={}
+    # — o handler no POST trata esses casos explicitamente.
+
+    return {
+        "telefone": telefone,
+        "tipo": tipo,
+        "conteudo": conteudo,
+    }
