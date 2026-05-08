@@ -1,16 +1,34 @@
 # CLAUDE.md — EduBot
 
+> **Para quem é este arquivo:** o Claude Code lê este `CLAUDE.md` automaticamente ao iniciar qualquer sessão dentro do repo. Este documento é a **fonte da verdade técnica** sobre o EduBot — código, schema, endpoints, débito técnico, comandos.
+>
+> **Para tese estratégica, modelo de negócio, posicionamento e proposta de valor**, consulte `edubot_briefing.md` no Project do Claude (chat). Os dois documentos são complementares e devem ser mantidos sincronizados quando houver mudança relevante.
+
+---
+
 ## 1. Visão geral do projeto
 
-EduBot é um copiloto acadêmico via WhatsApp para estudantes universitários brasileiros. O aluno envia seu plano de aula (texto colado, PDF ou foto) pelo WhatsApp, o sistema usa Claude Haiku 4.5 para extrair automaticamente todas as datas e atividades (provas, quizzes, entregas, etc.), e passa a enviar notificações diárias e semanais para manter o aluno organizado. Modelo B2B — o cliente é a instituição de ensino.
+EduBot é uma **plataforma de inteligência pedagógica via WhatsApp** para universidades brasileiras, com três camadas de valor empilhadas:
+
+1. **Camada 1 — Aluno:** organização (parsing de programa, lembretes) + tutoria via IA
+2. **Camada 2 — Professor:** feedback em tempo real sobre dúvidas e gaps da turma
+3. **Camada 3 — Instituição:** dashboard pedagógico + avaliação docente data-driven + IA proprietária educacional substituindo ChatGPT Enterprise
+
+Modelo comercial é **B2B institucional** (não B2B2C). Para detalhes estratégicos, ver `edubot_briefing.md` no chat.
+
+**Estado de implementação:** Camada 1 com código completo e auditado — pendente credenciais Meta e commit/deploy. Camadas 2 e 3 ainda não existem em código.
+
+---
 
 ## 2. Sobre o desenvolvedor
 
 - **Nome:** Leonardo (Leo) Passarelli, 22 anos
 - **Formação:** Finanças no Insper (5º de 8 semestres), intercâmbio prévio no Babson College
-- **Nível técnico:** Sem experiência prévia com desenvolvimento. Construiu o EduBot com ajuda de IA (Cursor + Claude)
-- **Idioma:** Português brasileiro. Toda comunicação deve ser em PT-BR
+- **Nível técnico:** Sem experiência prévia com desenvolvimento. Constrói o EduBot com ajuda de IA (Cursor + Claude no chat + Claude Code)
+- **Idioma:** Português brasileiro. Toda comunicação em PT-BR
 - **Estilo de trabalho:** Prefere explicações acessíveis (termos técnicos devem ser explicados brevemente), guidance passo-a-passo com confirmação entre etapas, e nunca despejos grandes de código sem contexto. Costuma confirmar verbalmente em vez de colar saídas reais — sempre peça a saída bruta do terminal antes de avançar em mudanças críticas.
+
+---
 
 ## 3. Stack técnico
 
@@ -30,9 +48,9 @@ EduBot é um copiloto acadêmico via WhatsApp para estudantes universitários br
 | Deploy | Railway (Nixpacks) | edubot-production-073e.up.railway.app |
 | Containers (dev) | Docker Compose | PostgreSQL 16 + Redis 7 |
 
-## 4. Arquitetura e fluxo principal
+---
 
-### Estrutura de pastas
+## 4. Arquitetura e estrutura de pastas
 
 ```
 edubot/
@@ -47,7 +65,9 @@ edubot/
 │   │   ├── alunos.py        # CRUD alunos + matérias + eventos — protegido
 │   │   └── webhook.py       # GET+POST /webhook (WhatsApp) — público (HMAC)
 │   └── services/
-│       └── parser.py        # ParserEngine — chama Claude API
+│       ├── parser.py        # ParserEngine — chama Claude API
+│       ├── whatsapp.py      # Envio de mensagens + download de mídia (Meta API)
+│       └── onboarding.py    # Máquina de estados do onboarding do aluno
 ├── sql/
 │   └── schema.sql           # Schema PostgreSQL completo
 ├── docker-compose.yml       # PostgreSQL + Redis local
@@ -58,104 +78,178 @@ edubot/
 └── .env.example             # Template de variáveis de ambiente
 ```
 
-### Fluxo: mensagem WhatsApp → resposta
+---
+
+## 5. Fluxo: mensagem WhatsApp → resposta
 
 1. Aluno envia mensagem no WhatsApp
 2. Meta faz POST para `/webhook` no servidor
-3. `webhook.py` valida assinatura HMAC (Frente 1), identifica tipo (texto/PDF/imagem)
-4. Texto longo (>200 chars) → `ParserEngine.parsear_texto()`
-5. ParserEngine envia para Claude API com prompt especializado
-6. Claude retorna JSON estruturado (matéria, eventos, datas)
-7. Sistema gera resumo de confirmação formatado para WhatsApp
-8. **[NÃO IMPLEMENTADO]** Envia resumo de volta ao aluno (código de envio inexistente)
-9. **[NÃO IMPLEMENTADO]** Aluno confirma → salva no banco
-10. **[NÃO IMPLEMENTADO]** Celery envia notificações diárias/semanais
+3. `webhook.py` valida assinatura HMAC (Frente 1)
+4. `_extrair_mensagem(payload)` extrai `{telefone, tipo, conteudo}` do payload
+5. **`onboarding.processar_mensagem(...)`** roteia pelo estado atual do aluno:
+   - `NOVO` → boas-vindas + pede nome
+   - `AGUARDANDO_NOME` → salva nome, pede PDF
+   - `AGUARDANDO_PLANO` → recebe PDF, baixa via `whatsapp.baixar_midia()`, parseia com `ParserEngine`, mostra resumo
+   - `AGUARDANDO_CONFIRMACAO_PLANO` → SIM salva no banco; NÃO descarta e pede outro PDF
+   - `AGUARDANDO_MAIS_MATERIAS` → SIM volta a pedir PDF; NÃO finaliza onboarding
+   - `ATIVO` → onboarding completo (notificações automáticas ainda não implementadas)
+6. **`whatsapp.enviar_mensagem_texto(telefone, resposta)`** envia a resposta de volta
+7. Webhook retorna 200 ao Meta (sempre — para evitar reenvio)
 
-### Banco de dados — 6 tabelas
+Estado do onboarding é persistido em `ConversaSessao.contexto` (JSON). Plano parseado fica em `contexto.plano_pendente` até confirmação.
 
-- `instituicao` — faculdade/universidade cliente (B2B)
-- `aluno` — usuário final (identificado pelo telefone WhatsApp)
-- `materia` — disciplina vinculada ao aluno
-- `evento_academico` — cada item do cronograma (prova, quiz, etc.)
-- `notificacao_log` — registro de mensagens enviadas
-- `conversa_sessao` — contexto de conversa para chat interativo
+---
 
-### Endpoints da API
+## 6. Banco de dados — 6 tabelas
+
+| Tabela | Propósito |
+|---|---|
+| `instituicao` | Faculdade/universidade cliente (B2B) |
+| `aluno` | Usuário final (identificado pelo telefone WhatsApp). Campo `onboarding_completo` controla fluxo |
+| `materia` | Disciplina vinculada ao aluno |
+| `evento_academico` | Cada item do cronograma (prova, quiz, entrega, etc.) |
+| `notificacao_log` | Registro de mensagens enviadas |
+| `conversa_sessao` | Contexto de conversa para onboarding e chat. Campo `contexto` (JSON) guarda estado da máquina de estados |
+
+Schema completo em `sql/schema.sql`. Modelos SQLAlchemy em `app/models/database.py`.
+
+---
+
+## 7. Endpoints da API
 
 | Método | Rota | Proteção | Status |
 |--------|------|----------|--------|
-| POST | `/api/v1/parser/texto` | X-API-Key | Funcional |
-| POST | `/api/v1/parser/pdf` | X-API-Key | Funcional |
-| POST | `/api/v1/parser/imagem` | X-API-Key | Funcional |
-| POST | `/api/v1/alunos` | X-API-Key | Funcional |
-| POST | `/api/v1/alunos/{id}/materias` | X-API-Key | Funcional |
-| GET | `/api/v1/alunos/{id}/proximos-eventos` | X-API-Key | Funcional |
-| GET | `/api/v1/alunos/{id}/eventos-hoje` | X-API-Key | Funcional |
-| GET | `/webhook` | verify_token (Meta) | Funcional |
-| POST | `/webhook` | HMAC (Meta) | Recebe mas não responde |
-| GET | `/health` | público | Funcional |
+| POST | `/api/v1/parser/texto` | X-API-Key | ✅ Funcional |
+| POST | `/api/v1/parser/pdf` | X-API-Key | ✅ Funcional |
+| POST | `/api/v1/parser/imagem` | X-API-Key | ✅ Funcional |
+| POST | `/api/v1/alunos` | X-API-Key | ✅ Funcional |
+| POST | `/api/v1/alunos/{id}/materias` | X-API-Key | ✅ Funcional |
+| GET | `/api/v1/alunos/{id}/proximos-eventos` | X-API-Key | ✅ Funcional |
+| GET | `/api/v1/alunos/{id}/eventos-hoje` | X-API-Key | ⚠️ Funcional, mas retorna 500 quando aluno não existe (deveria ser 404) |
+| GET | `/webhook` | verify_token (Meta) | ✅ Funcional |
+| POST | `/webhook` | HMAC (Meta) | ⚠️ **Código completo e smoke-testado — uncommitted** |
+| GET | `/health` | público | ✅ Funcional |
 
-## 5. Status atual
+---
 
-### Funciona
+## 8. Estado atual (atualizar ao fim de cada sessão)
 
-- Parser de texto, PDF e imagem via endpoints da API REST (autenticados)
-- CRUD de alunos (criar/buscar por telefone)
-- Adicionar matéria com eventos parseados
-- Consulta de próximos eventos e eventos de hoje
-- Verificação do webhook do WhatsApp (GET) com verify_token
-- Validação HMAC obrigatória em produção (Frente 1)
-- Autenticação por API key em endpoints internos (Frente 2)
-- Recepção de POST do webhook (após HMAC ok) — identifica tipo, parseia texto longo
-- Schema do banco completo com índices, views e triggers
-- Deploy no Railway rodando em `ENVIRONMENT=production`
-- Webhook configurado e subscrito ao evento `messages` no painel do Meta (desde 18/abr/2026)
+**Última atualização:** 07/05/2026 (auditoria + hardening + smoke test via chat)
 
-### Incompleto — TODOs no webhook.py
+### ✅ Pronto e em produção
 
-- **CRÍTICO**: Enviar mensagens de volta ao aluno via WhatsApp API (código de envio nunca foi escrito; sem isso, o bot não responde nada)
-- Fluxo de onboarding (boas-vindas, criar aluno)
-- Salvar eventos após confirmação do aluno
-- Processar PDF e imagem recebidos pelo WhatsApp (baixar via Media API)
-- Chat interativo (processar perguntas, buscar contexto)
-- Armazenamento temporário no Redis (resultado do parser pré-confirmação)
+- Backend FastAPI no Railway, rodando em `ENVIRONMENT=production`
+- Parser de texto/PDF/imagem (Claude Haiku 4.5) com endpoints REST autenticados
+- Schema completo das 6 tabelas
+- CRUD de alunos, matérias, eventos
+- Webhook GET (verify_token) configurado e subscrito ao evento `messages` no painel Meta
+- **Frente 1 ativa:** validação HMAC obrigatória em produção (`WA_APP_SECRET` configurado, commit `c995f81`)
+- **Frente 2 ativa:** API key auth em endpoints internos (`INTERNAL_API_KEY`, commit `fb0403c`)
+- Landing page (Gamma)
 
-### Ausente
+### ✅ Implementado e smoke-testado localmente (não deployado)
 
-- Função/serviço de **envio** de mensagens WhatsApp (não existe `WA_ACCESS_TOKEN` sendo lido em lugar nenhum do código)
-- Sistema de notificações (Celery workers/tasks não existem)
-- Alembic não configurado (sem pasta alembic/ nem alembic.ini)
-- Zero testes automatizados
-- Compliance LGPD no código (consentimento, direito ao esquecimento)
-- Rate limiting (Frente 3 — slowapi pendente)
-- CORS restrito (Frente 4 — hoje é `"*"` por fallback)
+- **`app/services/whatsapp.py`** (criado 19/abr/2026) — `enviar_mensagem_texto()` e `baixar_midia()`. Lê `WA_ACCESS_TOKEN` e `WA_PHONE_NUMBER_ID`. Tratamento de erro distingue token expirado (code 190), número não autorizado (131030), rate limit (429), timeout
+- **`app/services/onboarding.py`** (criado 19/abr/2026) — máquina de estados com 6 estados, reconhecimento generoso de SIM/NÃO, persistência em `ConversaSessao.contexto`, integração com parser e banco
+- **Smoke test local (07/05/2026):** transições NOVO → AGUARDANDO_NOME → AGUARDANDO_PLANO validadas com curl + psql. Webhook retorna 200 mesmo quando envio downstream falha (correto por design)
 
-## 6. Frentes de segurança
+### ⚠️ Código completo — 4 arquivos uncommitted
+
+Auditoria de 07/05/2026 confirmou que o código está completo e coerente fim-a-fim. O briefing anterior chamava de "integração pela metade" — na verdade era código pronto, só não commitado.
+
+Arquivos pendentes de commit:
+- **`app/main.py`** — adicionado warning não-fatal no lifespan: em production, avisa se `WA_ACCESS_TOKEN` ou `WA_PHONE_NUMBER_ID` faltarem (não crasha, apenas log warning)
+- **`app/routers/webhook.py`** — integração completa com onboarding: `_extrair_mensagem()`, chamada a `onboarding.processar_mensagem()`, envio de resposta via `whatsapp.enviar_mensagem_texto()`. Backup antigo em `webhook.py.backup-antes-onboarding`
+- **`app/services/whatsapp.py`** — novo arquivo (19/abr/2026), envio e download de mídia via Meta API
+- **`app/services/onboarding.py`** — novo arquivo (19/abr/2026), máquina de estados com 6 estados. Consolidação cosmética aplicada em 07/05: duas chamadas seguidas de `_atualizar_contexto` em `_handler_aguardando_confirmacao` unificadas em uma só
+
+### ❌ Bloqueadores para teste fim-a-fim
+
+- **`WA_ACCESS_TOKEN` retornando 401 do Meta** — token recém-rotacionado (07/05/2026) não está funcionando. Hipóteses: paste cortado, char invisível, token pertence a app diferente. Investigar antes de deploy
+- Token permanente via System User no Business Manager ainda não gerado — tokens temporários de 24h não servem para produção
+- `WA_PHONE_NUMBER_ID` precisa ser confirmado no Railway
+- 4 arquivos com mudanças não commitadas — deploy traz versão antiga
+- Número pessoal do Leo precisa ser registrado como test recipient no painel Meta (modo dev bloqueia envio para números não autorizados — code 131030)
+
+### ⚠️ Incidente operacional — 07/05/2026
+
+- Credenciais coladas no chat (Anthropic API key, Internal API key, WA Access Token). Todas rotacionadas no mesmo dia
+- Aproveitada rotação para limpar duplicação de `INTERNAL_API_KEY` no `.env` local
+
+### ❌ Camadas 2 e 3 — não existem em código
+
+- Tutoria conversacional (responder dúvidas de matéria — diferente de comandos de organização)
+- Sistema de captura/categorização de dúvidas para análise pedagógica
+- Consentimento LGPD explícito no onboarding (bloqueante para Camadas 2/3)
+- Dashboard de professor
+- Dashboard institucional
+
+---
+
+## 9. Próximos passos (ordem)
+
+### Sessão imediata — fechar Camada 1 fim-a-fim
+
+~~1. Revisar e completar `webhook.py`~~ ✅ Auditado em 07/05 — código completo
+~~2. Testar localmente com payload simulado~~ ✅ Smoke test passou em 07/05
+3. **Debug 401 do Meta** — descobrir por que o `WA_ACCESS_TOKEN` rotacionado está sendo rejeitado
+4. Commit dos 4 arquivos pendentes (`main.py`, `webhook.py`, `whatsapp.py`, `onboarding.py`)
+5. Deploy no Railway + configurar `WA_ACCESS_TOKEN` e `WA_PHONE_NUMBER_ID` no Railway
+6. Gerar **`WA_ACCESS_TOKEN` permanente** via System User no Business Manager
+7. Registrar número pessoal do Leo como test recipient no painel Meta
+8. Teste fim-a-fim: mandar mensagem real do WhatsApp → validar fluxo NOVO → ATIVO
+9. Validar fluxo em produção
+
+### Curto prazo — completar Camada 1
+
+- Notificações agendadas (Celery + Redis): lembretes diários e semanais de eventos
+- Texto de consentimento LGPD no onboarding (preparando Camadas 2/3)
+- Frente 3 — Rate limiting (`slowapi`): risco financeiro real (custo Anthropic se alguém abusar do parser)
+- Frente 4 — CORS restrito (lista explícita de origens em prod)
+- eSIM dedicado para o número oficial (em andamento — Vivo)
+
+### Médio prazo — destravar Camada 2
+
+- Diferenciar tipos de mensagem do aluno: comando vs. dúvida acadêmica
+- Estrutura de armazenamento de dúvidas (tema, conceito, timestamp, turma, professor)
+- Algoritmo de agrupamento/categorização de dúvidas
+
+### Longo prazo — Camada 3 (a venda real)
+
+- Dashboard institucional (frontend React separado, consumindo API)
+- Métricas pedagógicas agregadas (curva de dúvidas por professor, gaps por matéria, comparativo entre turmas)
+- Demo Insper como prova de conceito (substituição do ChatGPT institucional)
+
+---
+
+## 10. Frentes de segurança
 
 ### Concluídas
 
 #### Frente 1 — HMAC + verify_token do webhook (ativa em prod desde 18/abr/2026)
 
-- **Código**: `routers/webhook.py` (validação HMAC do POST + verify_token do GET)
-- **Variável obrigatória em prod**: `WA_APP_SECRET` (vem do painel Meta)
-- **Comportamento**: em produção, se `WA_APP_SECRET` estiver vazio, o app crasha no startup (`RuntimeError`). Em dev, apenas warning.
-- **Histórico**: o código foi commitado em `c995f81` (semanas antes de 18/abr/2026), mas o guard só efetivamente disparava em `ENVIRONMENT=production`. Como `ENVIRONMENT` não estava setado no Railway, o app rodava em modo dev mesmo em prod, e a validação HMAC era pulada silenciosamente. Corrigido em 18/abr/2026 ao adicionar `ENVIRONMENT=production` e `WA_APP_SECRET` ao Railway.
+- **Código:** `routers/webhook.py` (validação HMAC do POST + verify_token do GET)
+- **Variável obrigatória em prod:** `WA_APP_SECRET` (vem do painel Meta)
+- **Comportamento:** em produção, se `WA_APP_SECRET` estiver vazio, o app crasha no startup. Em dev, apenas warning.
+- **Histórico:** código commitado em `c995f81` (semanas antes), mas só ativou em prod após `ENVIRONMENT=production` ser setado no Railway em 18/abr/2026.
 
 #### Frente 2 — API key auth para endpoints internos (ativa em prod desde 18/abr/2026)
 
-- **Código**: `app/auth.py` (função `verify_api_key`), aplicado via `Depends` em `routers/parser.py` e `routers/alunos.py` no nível do router
-- **Variável obrigatória em prod**: `INTERNAL_API_KEY` (gere com `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`)
-- **Header esperado**: `X-API-Key: <chave>`
-- **Comportamento**: 401 sem chave / chave errada; passa adiante se chave correta. Usa `secrets.compare_digest` (anti timing-attack). Em produção, se `INTERNAL_API_KEY` estiver vazia, o app crasha no startup.
-- **Importante**: chaves devem ser DIFERENTES entre dev e prod. Vazamento da chave dev não compromete prod.
-- **Commit**: `fb0403c`
+- **Código:** `app/auth.py` (função `verify_api_key`), aplicado via `Depends` em `routers/parser.py` e `routers/alunos.py`
+- **Variável obrigatória em prod:** `INTERNAL_API_KEY`. Gerar com: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
+- **Header esperado:** `X-API-Key: <chave>`
+- **Comportamento:** 401 sem chave/chave errada. Usa `secrets.compare_digest` (anti timing-attack). Em prod, se `INTERNAL_API_KEY` vazia, app crasha no startup.
+- **Importante:** chaves DIFERENTES entre dev e prod. Vazamento de dev não compromete prod.
+- **Commit:** `fb0403c`
 
 ### Pendentes
 
-- **Frente 3 — Rate limiting**: usar `slowapi`. Risco principal: explosão de custo na API Anthropic se alguém abusar do parser, mesmo com API key.
-- **Frente 4 — CORS restrito**: hoje é `os.getenv("CORS_ORIGINS", "*")`. Em prod, deve ser lista explícita de origens permitidas.
+- **Frente 3 — Rate limiting** (`slowapi`). Risco principal: explosão de custo na API Anthropic se alguém abusar do parser, mesmo com API key.
+- **Frente 4 — CORS restrito.** Hoje é `os.getenv("CORS_ORIGINS", "*")`. Em prod, deve ser lista explícita.
 
-## 7. Débito técnico conhecido
+---
+
+## 11. Débito técnico conhecido
 
 ### Bugs e code smells
 
@@ -163,57 +257,45 @@ edubot/
 - `requirements.txt:24-25`: `python-dotenv` listado duas vezes
 - Parser usa `httpx` direto em vez do SDK oficial `anthropic` — menos robusto (sem retries automáticos, sem tratamento de rate limit nativo)
 - Código de limpeza de JSON duplicado nos 3 métodos do parser (texto, PDF, imagem)
-- Endpoint `GET /api/v1/alunos/{id}/eventos-hoje` retorna **500** quando aluno não existe (deveria ser 404). Não tratado.
-- `.env.backup-frente2` ficou untracked no repo após Frente 2 — confirmar que `.gitignore` cobre `.env*` (não só `.env` exato)
+- Endpoint `GET /api/v1/alunos/{id}/eventos-hoje` retorna 500 quando aluno não existe (deveria ser 404)
+- `webhook.py.backup-antes-onboarding` precisa ser removido após commit do novo webhook
 
 ### Falta de infraestrutura
 
 - Sem testes automatizados (nem unit, nem integração, nem e2e)
 - Sem CI (lint, test, type-check antes do deploy)
-- Sem observabilidade (sem Sentry, sem APM, sem logs estruturados além do `logging.basicConfig` padrão)
-- Sem rollback documentado (Railway tem botão "Rollback" mas não há runbook)
+- Sem observabilidade (Sentry, APM, logs estruturados)
+- Sem rollback documentado
 
-## 8. Prioridades atuais (em ordem)
+---
 
-1. **Implementar envio de mensagens via WhatsApp** — sem isso, o bot literalmente não responde aluno. Envolve: gerar `WA_ACCESS_TOKEN` (temporário 24h ou permanente via System User), adicionar `WA_ACCESS_TOKEN` no Railway, criar `app/services/whatsapp.py` com função `enviar_mensagem(phone, texto)`, integrar no handler `POST /webhook`, decidir lógica de produto (o que responder).
-2. **Frentes 3 e 4 de segurança** — rate limiting e CORS restrito. Frente 3 é especialmente urgente pelo risco financeiro (custo Anthropic).
-3. **Adicionar seu número como recipient de teste no Meta** — necessário pra o bot conseguir enviar mensagem em modo "Em desenvolvimento". Sem isso, mesmo com código pronto, Meta bloqueia o envio.
-4. **Notificações agendadas** — Celery workers para lembretes diários e semanais.
-5. **Compliance LGPD** — logs de consentimento, direito ao esquecimento, política de privacidade.
-6. **Futuro**: app React Native como interface complementar.
+## 12. Variáveis de ambiente necessárias
 
-## 9. Modelo de negócio
+Ver `.env.example` para o template completo.
 
-- **Produto:** Copiloto acadêmico via WhatsApp para universitários brasileiros
-- **Modelo:** B2B — vendido para departamentos acadêmicos de universidades
-- **Preço:** R$ 69,90 por aluno por semestre
-- **Meta 5 anos:** 1.000 a 50.000 alunos pagantes
-- **Status:** Pré-lançamento. Nenhuma universidade cliente ainda
-- **Equipe:** Leonardo sozinho (produto + negócio + dev com IA). Sem cofundador técnico
+### Obrigatórias em produção (app crasha sem elas)
 
-## 10. Restrições legais
+- `ENVIRONMENT=production`
+- `WA_APP_SECRET` — Secret do app Meta (Frente 1)
+- `INTERNAL_API_KEY` — Frente 2. Use chaves diferentes entre dev e prod.
+- `ANTHROPIC_API_KEY` — sem ela, parser não funciona
+- `DATABASE_URL` — PostgreSQL
 
-- **LGPD:** Pré-lançamento exige conformidade total (dados de alunos brasileiros menores ou maiores de idade)
-- **Trademark:** Nome "EduBot" precisa ser verificado/registrado
-- **Termos de uso + Política de privacidade:** Devem existir ANTES de qualquer aluno real usar o sistema
-- **Assessoria legal:** Madrasta do Leonardo (advogada especializada em direitos creditórios) está ajudando com checklist legal — trabalho em andamento
+### Necessárias para WhatsApp funcionar (warning no startup em prod, não-fatal)
 
-## 11. Regras de engajamento
+- `WA_VERIFY_TOKEN` — token de verificação do webhook (string inventada por você, deve bater com painel Meta)
+- `WA_PHONE_NUMBER_ID` — ID do número WhatsApp Business
+- `WA_ACCESS_TOKEN` — **token permanente** via System User do Business Manager. Token temporário de 24h não é adequado para produção.
 
-Ao trabalhar neste projeto, SEMPRE siga estas regras:
+### Pendentes (planos futuros)
 
-- **Explica o "porquê" antes do "como"** — Leonardo precisa entender a motivação antes de ver código
-- **Plano primeiro, código depois** — Para qualquer mudança, descreve o plano em alto nível e espera aprovação antes de editar arquivos
-- **Mudanças grandes em passos pequenos** — Divide em etapas e confirma cada uma
-- **Alerta proativo** — Se o pedido tem problema (técnico, segurança, negócio, estratégico), alerta com clareza ANTES de executar
-- **Linguagem acessível** — Termos técnicos devem ser explicados brevemente. Não assuma conhecimento que Leonardo não demonstrou ter
-- **Mostra como testar** — Sempre indica como validar uma mudança depois de feita
-- **Git com permissão** — Sugere mensagem de commit mas NUNCA commita sem confirmação explícita
-- **Deploy manual** — NUNCA faz deploy sozinho. Leonardo controla quando subir para produção
-- **Pede saída real do terminal** — Leonardo costuma confirmar verbalmente em vez de colar saídas. Para mudanças críticas (env vars, deploys, comandos destrutivos), sempre exija a saída bruta antes de avançar.
-- **Idioma:** Toda comunicação em português brasileiro
+- `REDIS_URL` (Celery não implementado)
+- `CORS_ORIGINS` (Frente 4 pendente; hoje fallback `"*"`)
+- `PARSER_MODEL` (default: `claude-haiku-4-5-20251001`)
 
-## 12. Comandos úteis
+---
+
+## 13. Comandos úteis
 
 ```bash
 # --- Desenvolvimento local ---
@@ -221,26 +303,33 @@ Ao trabalhar neste projeto, SEMPRE siga estas regras:
 # Subir banco + Redis
 docker compose up -d
 
-# Instalar dependências
-python -m venv venv
+# Ativar venv
 source venv/bin/activate
-pip install -r requirements.txt
 
 # Rodar a API localmente
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8001
 
 # Docs interativos (Swagger)
-# http://localhost:8000/docs
+# http://localhost:8001/docs
+
+# Health check
+curl http://localhost:8001/health
 
 # Testar parser de texto (com API key local)
 DEVKEY=$(grep "^INTERNAL_API_KEY=" .env | cut -d= -f2)
-curl -X POST http://localhost:8000/api/v1/parser/texto \
+curl -X POST http://localhost:8001/api/v1/parser/texto \
   -H "X-API-Key: $DEVKEY" \
   -H "Content-Type: application/json" \
   -d '{"texto": "Finanças III\nAula 1 - 10/02\nProva - 24/02 peso 30%"}'
 
-# Health check (público, sem auth)
-curl http://localhost:8000/health
+# --- Auditoria de estado ---
+
+# Estado do git
+git status
+git log --oneline -10
+
+# O que está uncommitted
+git diff app/routers/webhook.py
 
 # --- Produção (Railway) ---
 # URL: https://edubot-production-073e.up.railway.app
@@ -248,35 +337,47 @@ curl http://localhost:8000/health
 # NUNCA fazer push para main sem confirmação do Leonardo
 ```
 
-## 13. Variáveis de ambiente necessárias
+---
 
-Ver `.env.example` para o template completo. Resumo:
+## 14. Regras de engajamento (inegociável)
 
-### Obrigatórias em produção (app crasha sem elas)
+1. **Antes de planejar**, peça o estado atual do repo (estrutura, conteúdo dos arquivos relevantes). Não assuma — verifique.
+2. **Apresente o plano completo** (funções, dependências, env vars, endpoints) antes de escrever código.
+3. **Mostre diff completo** de cada arquivo antes de qualquer edição. Nunca substitua diff por resumo.
+4. **Aguarde aprovação explícita** antes de qualquer escrita, commit ou deploy.
+5. **Testes locais antes de qualquer push.** Nada vai pro Railway sem aprovação explícita.
+6. **Em passos críticos**, peça output bruto do terminal — não aceite "tudo certo" verbal. Atenção a artefatos `[200~` (bracketed paste mode).
+7. **Explica o "porquê" antes do "como"** — Leo precisa entender a motivação antes de ver código.
+8. **Mudanças grandes em passos pequenos** — divide em etapas e confirma cada uma.
+9. **Alerta proativo** — se o pedido tem problema (técnico, segurança, negócio, estratégico), alerta com clareza ANTES de executar.
+10. **Linguagem acessível** — termos técnicos devem ser explicados brevemente.
+11. **Mostra como testar** — sempre indica como validar uma mudança.
+12. **Git com permissão** — sugere mensagem de commit mas NUNCA commita sem confirmação explícita.
+13. **Deploy manual** — NUNCA faz deploy sozinho.
+14. **Idioma** — toda comunicação em PT-BR.
 
-- `ENVIRONMENT=production` — ativa guards de segurança em prod
-- `WA_APP_SECRET` — Secret do app Meta (Frente 1 — HMAC do webhook)
-- `INTERNAL_API_KEY` — Chave para endpoints `/api/v1/*` (Frente 2 — API key auth). Gere com `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`. **Use chaves diferentes entre dev e prod.**
-- `ANTHROPIC_API_KEY` — Chave da API Anthropic (sem ela, parser não funciona)
-- `DATABASE_URL` — URL de conexão PostgreSQL
+---
 
-### Necessárias mas sem guard
+## 15. Histórico de mudanças importantes
 
-- `WA_VERIFY_TOKEN` — Token de verificação do webhook WhatsApp (string inventada por você, deve bater com o que está configurado no painel Meta)
-- `WA_PHONE_NUMBER_ID` — ID do número de telefone WhatsApp Business
-- `PARSER_MODEL` — Modelo Claude (default: `claude-haiku-4-5-20251001`)
+### 07/05/2026 — Auditoria completa + hardening + smoke test
+- Auditoria dos 4 arquivos core (`webhook.py`, `whatsapp.py`, `onboarding.py`, `main.py`): código confirmado completo e coerente fim-a-fim
+- Hardening em `main.py`: warning não-fatal no lifespan se credenciais WhatsApp faltarem em produção
+- Consolidação cosmética em `onboarding.py`: duas chamadas `_atualizar_contexto` → uma só
+- Smoke test local: transições NOVO → AGUARDANDO_NOME → AGUARDANDO_PLANO validadas via curl + psql
+- Descoberta arqueológica: banco local tinha registro de 19/abr do número do Leo no estado AGUARDANDO_NOME — mensagem real chegou em prod, máquina rodou, só envio falhou (confirma que gap era credenciais, não código)
+- Incidente: credenciais vazadas no chat, todas rotacionadas no mesmo dia
+- Bloqueio identificado: `WA_ACCESS_TOKEN` rotacionado retorna 401 — investigar antes de deploy
 
-### Pendentes (referenciadas em planos futuros)
-
-- `WA_ACCESS_TOKEN` — Token de acesso da API WhatsApp para **enviar** mensagens. **Ainda não usado pelo código** (envio não implementado). Em modo dev do Meta, dura 24h.
-- `REDIS_URL` — URL do Redis (Celery e cache não implementados)
-- `CORS_ORIGINS` — Origens permitidas (Frente 4 pendente; hoje fallback é `"*"`)
-
-## 14. Histórico de mudanças importantes
+### 04/05/2026 — Auditoria do repo via chat
+- Confirmado que `whatsapp.py` e `onboarding.py` foram criados em 19/abr/2026 (untracked, ainda não commitados)
+- Confirmado que `webhook.py` está modificado mas não commitado, em meio à integração com onboarding
+- Atualização da tese de produto: B2B institucional com 3 camadas (ver `edubot_briefing.md`)
+- Decisão estratégica: priorizar finalização da Camada 1 antes de Camadas 2/3
+- Conversa inicial com pessoa do Insper rendeu pedido de proposta — deck Gamma será produzido no chat
 
 ### 18/abr/2026 — Frentes 1 e 2 ativas em produção
-
-- **Frente 2 implementada e deployada** (commit `fb0403c`): API key auth via header `X-API-Key` em todos os endpoints `/api/v1/*`. Usa `secrets.compare_digest` para evitar timing attacks. Variável `INTERNAL_API_KEY` adicionada ao Railway com chave distinta da dev.
-- **Frente 1 ativada de verdade**: descoberto que apesar do código HMAC estar commitado há semanas (`c995f81`), o app rodava em `ENVIRONMENT=development` no Railway, pulando o guard. Corrigido adicionando `ENVIRONMENT=production` e `WA_APP_SECRET` ao Railway.
-- **Webhook WhatsApp configurado pela primeira vez no painel Meta**: callback URL registrada (`https://edubot-production-073e.up.railway.app/webhook`), verify_token sincronizado entre Railway e Meta, subscrição ao evento `messages` ativada.
-- **Confirmado** que o bot **nunca respondeu** mensagem no WhatsApp — não por bug, mas porque o código de envio nunca foi escrito (`WA_ACCESS_TOKEN` referenciada em planos mas nunca lida pelo código). Ficou como prioridade 1 para próxima sessão.
+- Frente 2 implementada e deployada (commit `fb0403c`)
+- Frente 1 ativada de verdade após `ENVIRONMENT=production` ser setado no Railway
+- Webhook WhatsApp configurado pela primeira vez no painel Meta (callback URL, verify_token, subscrição a `messages`)
+- Confirmado que o bot nunca havia respondido — código de envio inexistente até então
