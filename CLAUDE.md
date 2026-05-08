@@ -127,14 +127,14 @@ Schema completo em `sql/schema.sql`. Modelos SQLAlchemy em `app/models/database.
 | GET | `/api/v1/alunos/{id}/proximos-eventos` | X-API-Key | ✅ Funcional |
 | GET | `/api/v1/alunos/{id}/eventos-hoje` | X-API-Key | ⚠️ Funcional, mas retorna 500 quando aluno não existe (deveria ser 404) |
 | GET | `/webhook` | verify_token (Meta) | ✅ Funcional |
-| POST | `/webhook` | HMAC (Meta) | ⚠️ **Código completo e smoke-testado — uncommitted** |
+| POST | `/webhook` | HMAC (Meta) | ✅ Funcional (deploy `0bbe444`, 08/05/2026) |
 | GET | `/health` | público | ✅ Funcional |
 
 ---
 
 ## 8. Estado atual (atualizar ao fim de cada sessão)
 
-**Última atualização:** 07/05/2026 (auditoria + hardening + smoke test via chat)
+**Última atualização:** 08/05/2026 (deploy Camada 1 + token permanente + validação pipeline)
 
 ### ✅ Pronto e em produção
 
@@ -147,34 +147,28 @@ Schema completo em `sql/schema.sql`. Modelos SQLAlchemy em `app/models/database.
 - **Frente 2 ativa:** API key auth em endpoints internos (`INTERNAL_API_KEY`, commit `fb0403c`)
 - Landing page (Gamma)
 
-### ✅ Implementado e smoke-testado localmente (não deployado)
+### ✅ Deploy Camada 1 completo (08/05/2026)
 
-- **`app/services/whatsapp.py`** (criado 19/abr/2026) — `enviar_mensagem_texto()` e `baixar_midia()`. Lê `WA_ACCESS_TOKEN` e `WA_PHONE_NUMBER_ID`. Tratamento de erro distingue token expirado (code 190), número não autorizado (131030), rate limit (429), timeout
-- **`app/services/onboarding.py`** (criado 19/abr/2026) — máquina de estados com 6 estados, reconhecimento generoso de SIM/NÃO, persistência em `ConversaSessao.contexto`, integração com parser e banco
-- **Smoke test local (07/05/2026):** transições NOVO → AGUARDANDO_NOME → AGUARDANDO_PLANO validadas com curl + psql. Webhook retorna 200 mesmo quando envio downstream falha (correto por design)
+- **`app/services/whatsapp.py`** — cliente HTTP Meta Graph API: `enviar_mensagem_texto()` + `baixar_midia()`. Tratamento de erro: token expirado (190), número não autorizado (131030), rate limit (429), timeout. Commit `0bbe444`
+- **`app/services/onboarding.py`** — máquina de estados com 6 estados (NOVO → ATIVO), reconhecimento generoso de SIM/NÃO, persistência em `ConversaSessao.contexto`. Commit `0bbe444`
+- **`app/routers/webhook.py`** — handler completo: extrai mensagem → delega pro onboarding → envia resposta. Sempre retorna 200 ao Meta. Commit `0bbe444`
+- **`app/main.py`** — warning não-fatal no lifespan se `WA_ACCESS_TOKEN` ou `WA_PHONE_NUMBER_ID` faltarem em prod. Commit `2b6e373`
+- **Token permanente Meta** — System User `edubot-api`, app EduBot (`1510528877441440`), scopes `whatsapp_business_messaging` + `whatsapp_business_management`, `expires_at=0`. Validado via curl + debug_token em 08/05/2026
+- **Pipeline ponta-a-ponta validado (08/05/2026):** webhook de teste do painel Meta → HMAC valida → onboarding cria aluno + sessão + transiciona estado → retorna 200. Envio falha corretamente com log "número não autorizado" (esperado em Dev Mode)
+- **HEAD em produção:** `fbdde4d`
 
-### ⚠️ Código completo — 4 arquivos uncommitted
+### ❌ Bloqueador ativo — Meta Dev Mode
 
-Auditoria de 07/05/2026 confirmou que o código está completo e coerente fim-a-fim. O briefing anterior chamava de "integração pela metade" — na verdade era código pronto, só não commitado.
-
-Arquivos pendentes de commit:
-- **`app/main.py`** — adicionado warning não-fatal no lifespan: em production, avisa se `WA_ACCESS_TOKEN` ou `WA_PHONE_NUMBER_ID` faltarem (não crasha, apenas log warning)
-- **`app/routers/webhook.py`** — integração completa com onboarding: `_extrair_mensagem()`, chamada a `onboarding.processar_mensagem()`, envio de resposta via `whatsapp.enviar_mensagem_texto()`. Backup antigo em `webhook.py.backup-antes-onboarding`
-- **`app/services/whatsapp.py`** — novo arquivo (19/abr/2026), envio e download de mídia via Meta API
-- **`app/services/onboarding.py`** — novo arquivo (19/abr/2026), máquina de estados com 6 estados. Consolidação cosmética aplicada em 07/05: duas chamadas seguidas de `_atualizar_contexto` em `_handler_aguardando_confirmacao` unificadas em uma só
-
-### ❌ Bloqueadores para teste fim-a-fim
-
-- **`WA_ACCESS_TOKEN` retornando 401 do Meta** — token recém-rotacionado (07/05/2026) não está funcionando. Hipóteses: paste cortado, char invisível, token pertence a app diferente. Investigar antes de deploy
-- Token permanente via System User no Business Manager ainda não gerado — tokens temporários de 24h não servem para produção
-- `WA_PHONE_NUMBER_ID` precisa ser confirmado no Railway
-- 4 arquivos com mudanças não commitadas — deploy traz versão antiga
-- Número pessoal do Leo precisa ser registrado como test recipient no painel Meta (modo dev bloqueia envio para números não autorizados — code 131030)
+- App está em **Dev Mode** no Meta. Mensagens reais de WhatsApp **não disparam webhook** — só webhooks de teste do painel funcionam
+- Solução: **Business Verification** do CNPJ no Meta Business Manager → janela estimada 2-4 semanas
+- Detalhes operacionais em `pendencias_operacionais.md` no Project do Claude (chat), não no repo
+- Número pessoal do Leo precisa ser registrado como test recipient (modo dev bloqueia envio para números não autorizados — code 131030)
 
 ### ⚠️ Incidente operacional — 07/05/2026
 
 - Credenciais coladas no chat (Anthropic API key, Internal API key, WA Access Token). Todas rotacionadas no mesmo dia
 - Aproveitada rotação para limpar duplicação de `INTERNAL_API_KEY` no `.env` local
+- Vars rotacionadas e aplicadas no Railway em 08/05/2026: `WA_ACCESS_TOKEN`, `ANTHROPIC_API_KEY`, `INTERNAL_API_KEY`. Restart limpo, sem warnings
 
 ### ❌ Camadas 2 e 3 — não existem em código
 
@@ -190,15 +184,15 @@ Arquivos pendentes de commit:
 
 ### Sessão imediata — fechar Camada 1 fim-a-fim
 
-~~1. Revisar e completar `webhook.py`~~ ✅ Auditado em 07/05 — código completo
+~~1. Revisar e completar `webhook.py`~~ ✅ Auditado em 07/05
 ~~2. Testar localmente com payload simulado~~ ✅ Smoke test passou em 07/05
-3. **Debug 401 do Meta** — descobrir por que o `WA_ACCESS_TOKEN` rotacionado está sendo rejeitado
-4. Commit dos 4 arquivos pendentes (`main.py`, `webhook.py`, `whatsapp.py`, `onboarding.py`)
-5. Deploy no Railway + configurar `WA_ACCESS_TOKEN` e `WA_PHONE_NUMBER_ID` no Railway
-6. Gerar **`WA_ACCESS_TOKEN` permanente** via System User no Business Manager
-7. Registrar número pessoal do Leo como test recipient no painel Meta
-8. Teste fim-a-fim: mandar mensagem real do WhatsApp → validar fluxo NOVO → ATIVO
-9. Validar fluxo em produção
+~~3. Debug 401 do Meta~~ ✅ Resolvido em 08/05 — "E" duplicado no paste + token temporário expirado
+~~4. Commit dos 5 arquivos pendentes~~ ✅ 3 commits em 08/05 (`0bbe444`, `2b6e373`, `fbdde4d`)
+~~5. Deploy no Railway + configurar vars~~ ✅ Push + vars aplicadas em 08/05, restart limpo
+~~6. Gerar token permanente via System User~~ ✅ `edubot-api`, expires_at=0, validado via curl
+7. **Registrar número pessoal do Leo como test recipient** no painel Meta
+8. **Aguardar Business Verification** do CNPJ no Meta (2-4 semanas) → sair de Dev Mode
+9. Teste fim-a-fim: mandar mensagem real do WhatsApp → validar fluxo NOVO → ATIVO
 
 ### Curto prazo — completar Camada 1
 
@@ -258,7 +252,7 @@ Arquivos pendentes de commit:
 - Parser usa `httpx` direto em vez do SDK oficial `anthropic` — menos robusto (sem retries automáticos, sem tratamento de rate limit nativo)
 - Código de limpeza de JSON duplicado nos 3 métodos do parser (texto, PDF, imagem)
 - Endpoint `GET /api/v1/alunos/{id}/eventos-hoje` retorna 500 quando aluno não existe (deveria ser 404)
-- `webhook.py.backup-antes-onboarding` precisa ser removido após commit do novo webhook
+- ~~`webhook.py.backup-antes-onboarding` precisa ser removido~~ ✅ removido em 08/05/2026
 
 ### Falta de infraestrutura
 
@@ -359,6 +353,14 @@ git diff app/routers/webhook.py
 ---
 
 ## 15. Histórico de mudanças importantes
+
+### 08/05/2026 — Deploy Camada 1 + token permanente + validação pipeline
+- **Token permanente Meta:** System User `edubot-api`, app EduBot, scopes `whatsapp_business_messaging` + `whatsapp_business_management`, `expires_at=0`. Debug do 401 revelou "E" duplicado no paste + token temporário expirado
+- **3 commits deployados:** `0bbe444` (feat: WhatsApp client + onboarding + webhook), `2b6e373` (chore: hardening warnings), `fbdde4d` (docs: CLAUDE.md). HEAD em produção: `fbdde4d`
+- **Vars rotacionadas no Railway:** `WA_ACCESS_TOKEN`, `ANTHROPIC_API_KEY`, `INTERNAL_API_KEY`. Restart limpo, sem warnings no log
+- **Pipeline validado:** webhook de teste do painel Meta → HMAC → onboarding cria aluno + sessão → retorna 200. Envio falha com "número não autorizado" (esperado: Dev Mode)
+- **Bloqueio identificado:** app em Dev Mode no Meta. Mensagens reais não disparam webhook. Solução: Business Verification do CNPJ (2-4 semanas)
+- Backups antigos removidos: `CLAUDE.md.backup-pre-v2`, `webhook.py.backup-antes-onboarding`
 
 ### 07/05/2026 — Auditoria completa + hardening + smoke test
 - Auditoria dos 4 arquivos core (`webhook.py`, `whatsapp.py`, `onboarding.py`, `main.py`): código confirmado completo e coerente fim-a-fim
