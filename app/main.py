@@ -54,6 +54,23 @@ async def lifespan(app: FastAPI):
             "Configure INTERNAL_API_KEY ou mude ENVIRONMENT para 'development'."
         )
 
+    # Warning não-fatal: sem essas vars o bot recebe webhooks mas fica mudo
+    if environment == "production":
+        wa_token = os.getenv("WA_ACCESS_TOKEN", "")
+        wa_phone_id = os.getenv("WA_PHONE_NUMBER_ID", "")
+        if not wa_token:
+            logger.warning(
+                "🚨 WA_ACCESS_TOKEN não configurado! "
+                "O bot vai receber mensagens do WhatsApp mas NÃO vai conseguir "
+                "responder até essa variável ser configurada no Railway."
+            )
+        if not wa_phone_id:
+            logger.warning(
+                "🚨 WA_PHONE_NUMBER_ID não configurado! "
+                "O bot vai receber mensagens do WhatsApp mas NÃO vai conseguir "
+                "responder até essa variável ser configurada no Railway."
+            )
+
     # Inicializa parser engine (compartilhado entre requests)
     app.state.parser = ParserEngine(
         api_key=api_key,
