@@ -40,7 +40,7 @@ Modelo comercial é **B2B institucional** (não B2B2C). Para detalhes estratégi
 | Banco de dados | PostgreSQL | 16 (via Docker) |
 | ORM | SQLAlchemy (async) | 2.0.35 |
 | Driver DB | asyncpg | 0.29.0 |
-| Migrações DB | Alembic | 1.13.0 (instalado, NÃO configurado) |
+| Migrações DB | Alembic | 1.13.0 (configurado; baseline 0001 + migration 0002 Camada 2) |
 | IA / Parser | Claude Haiku 4.5 | via API HTTP (httpx) |
 | HTTP Client | httpx | 0.27.0 |
 | Validação | Pydantic | 2.9.0 |
@@ -69,7 +69,14 @@ edubot/
 │       ├── whatsapp.py      # Envio de mensagens + download de mídia (Meta API)
 │       └── onboarding.py    # Máquina de estados do onboarding do aluno
 ├── sql/
-│   └── schema.sql           # Schema PostgreSQL completo
+│   └── schema.sql           # Schema PostgreSQL completo (referência histórica; fonte da verdade agora é Alembic)
+├── alembic/
+│   ├── env.py               # Runner async com BLOQUEIO INCONDICIONAL contra Railway/produção
+│   ├── script.py.mako       # Template de migration
+│   └── versions/
+│       ├── 0001_baseline_schema.py    # 6 tabelas Camada 1 (validada contra prod 16/05)
+│       └── 0002_camada2_schema.py     # 14 tabelas Camada 2 (validada em banco descartável 19/05)
+├── alembic.ini              # Config do Alembic
 ├── docker-compose.yml       # PostgreSQL + Redis local
 ├── requirements.txt
 ├── Procfile                 # Deploy command
@@ -100,18 +107,58 @@ Estado do onboarding é persistido em `ConversaSessao.contexto` (JSON). Plano pa
 
 ---
 
-## 6. Banco de dados — 6 tabelas
+## 6. Banco de dados — 20 tabelas (6 Camada 1 + 14 Camada 2)
+
+### Camada 1 (6 tabelas, intocadas pela migration 0002)
 
 | Tabela | Propósito |
 |---|---|
 | `instituicao` | Faculdade/universidade cliente (B2B) |
 | `aluno` | Usuário final (identificado pelo telefone WhatsApp). Campo `onboarding_completo` controla fluxo |
-| `materia` | Disciplina vinculada ao aluno |
-| `evento_academico` | Cada item do cronograma (prova, quiz, entrega, etc.) |
+| `materia` | Disciplina vinculada ao aluno (cópia isolada por aluno — não serve para agregação institucional) |
+| `evento_academico` | Cada item do cronograma do aluno (prova, quiz, entrega, etc.) |
 | `notificacao_log` | Registro de mensagens enviadas |
 | `conversa_sessao` | Contexto de conversa para onboarding e chat. Campo `contexto` (JSON) guarda estado da máquina de estados |
 
-Schema completo em `sql/schema.sql`. Modelos SQLAlchemy em `app/models/database.py`.
+### Camada 2 (14 tabelas, adicionadas pela migration 0002 — schema pronto, aplicação ainda não usa)
+
+**Institucional (7):**
+| Tabela | Propósito |
+|---|---|
+| `curso` | Curso da instituição (Adm, Eco) — ponte para casos onde matéria existe em currículos distintos |
+| `materia_camada2` | Matéria como entidade institucional (nome propositalmente sufixado pra evitar colisão com `materia` legada) |
+| `professor` | Professor titular de turma. Identificado por `telefone_whatsapp` UNIQUE |
+| `plano_de_aula` | Documento institucional do semestre. UNIQUE(materia, semestre) — 1 plano por matéria por semestre |
+| `unidade_tematica` | Nível 1 da taxonomia (bloco de aulas, ex: "Modelo de Índice Único") |
+| `conceito` | Nível 2 da taxonomia (conceito específico, ex: "Decomposição de risco") |
+| `aula` | Nível 3 (uma aula específica com data). Paralela a unidade/conceito, não FK direta |
+
+**Turma (3):**
+| Tabela | Propósito |
+|---|---|
+| `turma` | Turma específica. UNIQUE(materia, curso, letra, semestre). FKs com ON DELETE RESTRICT em matéria e curso (defesa contra exclusão acidental). `letra VARCHAR(20)` |
+| `progresso_turma` | Ponteiro "em qual aula a turma está agora". UNIQUE(turma_id) — 1 progresso por turma |
+| `matricula` | Aluno↔turma. **`aluno_telefone` é STRING, deliberadamente NÃO FK** — desacopla camadas em nível de banco |
+
+**Consentimento (1):**
+| Tabela | Propósito |
+|---|---|
+| `consentimento_camada2` | Rastro auditável LGPD. Guarda `texto_aceito` completo + `versao_texto` + `data_consentimento` + `data_revogacao`. Histórico via nova linha a cada mudança |
+
+**Captura (3):**
+| Tabela | Propósito |
+|---|---|
+| `mensagem` | Toda mensagem WhatsApp (entrada e saída) que passa pelo webhook. Fonte de verdade canônica das conversas. Imutável (sem updated_at) |
+| `duvida` | Mensagem classificada (4 categorias: academica/organizacional/emocional/social). Tem flag `consentimento_camada2` travada no momento da criação. Tem coluna `embedding JSONB nullable` criada mas NÃO populada no MVP (upgrade futuro de clustering bottom-up) |
+| `relatorio` | Relatório semanal por turma. UNIQUE(turma_id, semana_inicio). Token UUID com expiração de 14 dias |
+
+**Convenções compartilhadas:**
+- PKs UUID com `gen_random_uuid()`; timestamps em TIMESTAMPTZ
+- Trigger `atualizar_updated_at()` aplicado em 8 tabelas com `updated_at` (reusa função criada pela `0001`)
+- Ponte Camada 1↔Camada 2 = `aluno_telefone` STRING (não FK) em 4 tabelas: matricula, mensagem, duvida, consentimento_camada2
+- Schema vivo no Alembic (`alembic/versions/`). `sql/schema.sql` é referência histórica da Camada 1.
+
+Modelos SQLAlchemy em `app/models/database.py` cobrem APENAS as 6 tabelas da Camada 1. Modelos da Camada 2 ainda não existem em código de aplicação.
 
 ---
 
@@ -134,7 +181,7 @@ Schema completo em `sql/schema.sql`. Modelos SQLAlchemy em `app/models/database.
 
 ## 8. Estado atual (atualizar ao fim de cada sessão)
 
-**Última atualização:** 08/05/2026 (deploy Camada 1 + token permanente + validação pipeline)
+**Última atualização:** 19/05/2026 (Sessão CC #2 — migration 0002 da Camada 2 escrita, validada e commitada local)
 
 ### ✅ Pronto e em produção
 
@@ -157,6 +204,14 @@ Schema completo em `sql/schema.sql`. Modelos SQLAlchemy em `app/models/database.
 - **Pipeline ponta-a-ponta validado (08/05/2026):** webhook de teste do painel Meta → HMAC valida → onboarding cria aluno + sessão + transiciona estado → retorna 200. Envio falha corretamente com log "número não autorizado" (esperado em Dev Mode)
 - **HEAD em produção:** `fbdde4d`
 
+### ✅ Fundação de banco para Camada 2 (Sessões CC #1 + #2)
+
+- **Alembic configurado** (Sessão CC #1, 16/05/2026): runner async com asyncpg, BLOQUEIO INCONDICIONAL contra Railway/produção via lista de patterns no `env.py` (sem flag de destravar, decisão de segurança consciente)
+- **Baseline `0001_baseline_schema.py`** das 6 tabelas existentes da Camada 1 — validada contra produção campo a campo via console read-only do Railway. Dois defeitos de `jsonb` (server_default com aspas escapadas) pegos no banco de teste descartável e corrigidos antes de qualquer toque em produção
+- **Migration `0002_camada2_schema.py`** (Sessão CC #2, 19/05/2026): 14 tabelas novas + 4 UNIQUE compostas + 16 FKs com `ON DELETE` corretos + 8 triggers `updated_at` reusando função da `0001`. Validação completa: `upgrade head` limpo em banco descartável, `pg_dump --schema-only` auditado campo a campo, `downgrade -1` reverte ao estado da `0001` sem erro
+- **Commits locais (sem push):** `db61abf` (setup Alembic + baseline 0001), `fb1df50` (migration 0002 Camada 2). Branch `main` 2 commits à frente de `origin/main`
+- **Stamp em produção:** ainda não feito. Quando feito, segue **exclusivamente** Opção B: `alembic stamp 0001 --sql` → SQL revisado manualmente → aplicado fora do Alembic via psql/console Railway. Mesmo procedimento para `0002` quando chegar a hora. Princípio: não instalar a chave do cofre ao lado do cofre
+
 ### ❌ Bloqueador ativo — Meta Dev Mode
 
 - App está em **Dev Mode** no Meta. Mensagens reais de WhatsApp **não disparam webhook** — só webhooks de teste do painel funcionam
@@ -170,13 +225,27 @@ Schema completo em `sql/schema.sql`. Modelos SQLAlchemy em `app/models/database.
 - Aproveitada rotação para limpar duplicação de `INTERNAL_API_KEY` no `.env` local
 - Vars rotacionadas e aplicadas no Railway em 08/05/2026: `WA_ACCESS_TOKEN`, `ANTHROPIC_API_KEY`, `INTERNAL_API_KEY`. Restart limpo, sem warnings
 
-### ❌ Camadas 2 e 3 — não existem em código
+### 🟡 Camada 2 — schema pronto, código de aplicação ainda não existe
 
-- Tutoria conversacional (responder dúvidas de matéria — diferente de comandos de organização)
-- Sistema de captura/categorização de dúvidas para análise pedagógica
-- Consentimento LGPD explícito no onboarding (bloqueante para Camadas 2/3)
-- Dashboard de professor
-- Dashboard institucional
+Schema completo das 14 tabelas no banco (migration 0002, validada em banco descartável). Falta toda a camada de aplicação:
+
+- Modelos SQLAlchemy das 14 tabelas novas (hoje `database.py` só cobre a Camada 1)
+- Persistência de mensagem ligada ao webhook (tabela `mensagem` — fundação de toda Camada 2)
+- Classificador de mensagem (Claude Haiku, 4 categorias, com fallback "captura sem classificar")
+- Agregador semanal de dúvidas por turma
+- Gerador de relatório (Claude Sonnet, sem material proprietário no MVP)
+- Rota `/r/{token}` no FastAPI (servida pelo próprio app — embrião natural da Camada 3)
+- Comandos WhatsApp: `/revogar`, `/ativar-feedback`, confirmação semanal de progresso pelo professor
+- Texto de consentimento LGPD efetivo (em revisão jurídica externa, fora do repo)
+- Agendamento automático de envio do relatório (bloqueado pelo mesmo gargalo do BV — exige template aprovado pra enviar fora da janela de 24h)
+
+### ❌ Camada 3 — Instituição
+
+Não existe em código. Bloqueada por LGPD (consentimento maduro é pré-requisito) e por Camada 2 estável.
+
+- Dashboard institucional autenticado (frontend React separado, consumindo API)
+- Métricas pedagógicas agregadas (curva de dúvidas por professor, gaps por matéria, comparativo entre turmas)
+- Avaliação docente data-driven
 
 ---
 
@@ -202,11 +271,20 @@ Schema completo em `sql/schema.sql`. Modelos SQLAlchemy em `app/models/database.
 - Frente 4 — CORS restrito (lista explícita de origens em prod)
 - eSIM dedicado para o número oficial (em andamento — Vivo)
 
-### Médio prazo — destravar Camada 2
+### Médio prazo — Camada 2 (schema pronto, falta aplicação)
 
-- Diferenciar tipos de mensagem do aluno: comando vs. dúvida acadêmica
-- Estrutura de armazenamento de dúvidas (tema, conceito, timestamp, turma, professor)
-- Algoritmo de agrupamento/categorização de dúvidas
+Sequência de Sessões CC pendentes, em ordem de dependência:
+
+1. ✅ **Sessão CC #1 (16/05):** Alembic + baseline `0001` (concluída)
+2. ✅ **Sessão CC #2 (19/05):** migration `0002` com as 14 tabelas (concluída, commit local `fb1df50`, sem push)
+3. ⏭️ **Sessão CC #3 — Modelos SQLAlchemy da Camada 2 + persistência de mensagem no webhook.** Atualizar `app/models/database.py` com as 14 entidades novas. Ligar webhook → grava cada mensagem (entrada e saída) na tabela `mensagem`. Sem classificação ainda — só persistência canônica. Fundação de tudo que vem depois
+4. **Sessão CC #4 — Classificador de mensagem.** Chamada Claude Haiku após gravar mensagem: retorna lista de dúvidas (pode ser vazia ou múltiplas) com categoria + conceito (lookup top-down via plano de aula) + aula. Fallback "captura sem classificar" pra mensagens ambíguas
+5. **Sessão CC #5 — Agregador semanal de dúvidas.** Lote rodando aos domingos, junta dúvidas da semana por turma, formata estrutura JSON do relatório (3 blocos da Decisão 5 da Sessão 1)
+6. **Sessão CC #6 — Gerador de relatório (Claude Sonnet) + rota `/r/{token}` no FastAPI.** Geração da prosa do bloco 3 + servindo o relatório web pelo próprio app. Mostra histórico do semestre quando aberto (token vence em 14 dias, mas a página agrega todas as semanas da turma daquele semestre)
+7. **Sessão CC #7 — Comandos WhatsApp + onboarding ampliado.** `/revogar`, `/ativar-feedback`, confirmação semanal de progresso pelo professor. Adicionar coleta de consentimento LGPD no fluxo de onboarding (apresentação única, sem barreira recorrente)
+8. **Sessão CC #8 — Agendamento automático (Celery + Redis).** Disparo dominical do agregador + envio do relatório via WhatsApp pro professor. **Bloqueado por:** envio fora da janela de 24h exige template aprovado → exige app publicado no Meta → exige Business Verification do CNPJ. Adiar até BV aprovado
+
+**Frente paralela off-Claude (caminho crítico):** Business Verification do CNPJ no Meta (janela 2-4 semanas, detalhada em `pendencias_operacionais.md` no Project do chat). Sem BV, Camada 1 não tem WhatsApp real e Camada 2 não tem agendamento de envio. Sessões CC #3-#7 podem rodar em paralelo à BV.
 
 ### Longo prazo — Camada 3 (a venda real)
 
@@ -253,6 +331,14 @@ Schema completo em `sql/schema.sql`. Modelos SQLAlchemy em `app/models/database.
 - Código de limpeza de JSON duplicado nos 3 métodos do parser (texto, PDF, imagem)
 - Endpoint `GET /api/v1/alunos/{id}/eventos-hoje` retorna 500 quando aluno não existe (deveria ser 404)
 - ~~`webhook.py.backup-antes-onboarding` precisa ser removido~~ ✅ removido em 08/05/2026
+
+### Dívidas técnicas registradas na Sessão CC #2 (19/05/2026)
+
+- **`mensagem.whatsapp_message_id` é índice normal, não UNIQUE.** Dedup de webhook reenviado fica como responsabilidade da aplicação. Revisar em migration futura antes de produção real — preferência: `UNIQUE WHERE whatsapp_message_id IS NOT NULL` (UNIQUE parcial)
+- **`duvida.embedding JSONB` criado mas NÃO populado no MVP.** Clustering bottom-up de dúvidas (descoberta de subtemas fora do plano de aula) é upgrade pós-validação. Subida pra "Nível 3" (popular + clusterizar) acontece quando houver 4-6 semanas de dado real de turmas piloto pra tunar threshold com base na realidade, não em chute. Exige: chave de API de embedding (OpenAI ou Voyage), código de embedding no classificador, algoritmo de clustering, integração no relatório. Sessão de produto própria, não adendo
+- **Onboarding da Camada 1 precisa ser ampliado** pra perguntar **letra da turma** quando Camada 2 estiver ativa. Hoje o aluno só identifica matéria; sem letra/curso é impossível agregar dúvidas na turma certa. Mudança vai pra Sessão CC #7 (comandos + onboarding ampliado)
+- **Página `/r/{token}` mostra histórico do semestre da turma**, não apenas a semana de referência do token. Schema não muda; é lógica da rota — implementar na Sessão CC #6. Razão: professor decide o que revisitar baseado em tendência, não em foto isolada de uma semana
+- **Modelo "Pessoa + PapelNaTurma" descartado.** Versões anteriores do design da Camada 2 mencionavam multi-papel (mesma pessoa como aluno em uma turma, monitor em outra). Decisão final (16/05): monitor não acessa Camada 2, simplificação confirmada. Schema atual tem entidades separadas `aluno` (Camada 1) e `professor` (Camada 2). Se um dia precisar voltar atrás, é refatoração consciente, não esquecimento
 
 ### Falta de infraestrutura
 
@@ -353,6 +439,25 @@ git diff app/routers/webhook.py
 ---
 
 ## 15. Histórico de mudanças importantes
+
+### 19/05/2026 — Sessão CC #2: migration 0002 com 14 tabelas da Camada 2
+
+- **Arquitetura técnica da Camada 2 fechada no chat** antes do CC: 14 tabelas (não 13 como previsto na Sessão 2 de 16/05 — `curso` adicionado como entidade separada porque no Insper "Finanças III" existe em currículos distintos de Adm e Eco com turmas separadas, mesma matéria)
+- **Decisões de produto novas fechadas na sessão:** letra da turma como discriminador (não horário), `letra VARCHAR(20)`, UNIQUE composta de 4 colunas em `turma`, token de relatório UUID com expiração de 14 dias, página `/r/{token}` mostra histórico do semestre da turma, embedding criado no schema mas não populado no MVP (Nível 1)
+- **Migration `0002_camada2_schema.py`** escrita pelo CC seguindo padrão da `0001`: 14 tabelas + 17 índices novos + 4 UNIQUE compostas + 16 FKs (com ON DELETE RESTRICT em `turma.materia_camada2_id` e `turma.curso_id`, SET NULL em FKs nullable, CASCADE no resto) + 8 triggers `updated_at` reusando função da `0001`
+- **Validação em banco descartável `edubot_test_0002`:** `upgrade head` limpo, `pg_dump --schema-only` auditado linha a linha contra a especificação (sem nenhum desvio, sem bug de JSONB), `downgrade -1` reverte limpo ao estado da `0001`
+- **2 commits locais (sem push):** `db61abf` (chore: instala Alembic + baseline 0001 — incluído porque a Sessão CC #1 ainda estava untracked), `fb1df50` (feat: migration 0002 da Camada 2). Branch `main` 2 commits à frente de `origin/main`
+- **Dívidas técnicas registradas:** `whatsapp_message_id` como índice normal (não UNIQUE) — dedup responsabilidade da aplicação; `embedding` criado mas não populado (sessão de produto futura quando houver dado real); onboarding da Camada 1 precisa ser ampliado pra perguntar letra de turma quando Camada 2 ativar; `/r/{token}` mostra histórico do semestre (lógica de rota, não schema)
+- Stamp em produção ainda não feito. Quando feito, exclusivamente via Opção B (`alembic stamp 0001 --sql` + aplicação manual fora do Alembic). Decisão consciente registrada em 16/05: bloqueio de produção no `env.py` fica INCONDICIONAL, sem flag de destravar
+
+### 16/05/2026 — Sessões 1+2 de arquitetura da Camada 2 + Sessão CC #1 (Alembic + baseline)
+
+- **Sessão 1 de arquitetura (produto)** no chat: 6 decisões da Camada 2 fechadas — unidade de agregação = turma; modelo de papéis (titular dono, monitor não acessa Camada 2 — decisão final); definição de dúvida (4 categorias: academica/organizacional/emocional/social); taxonomia hierárquica de 3 níveis derivada do plano de aula; entrega de relatório semanal domingo 15h via WhatsApp + link web; consentimento LGPD opt-in com flag por dúvida sem barreira recorrente
+- **5 planos de aula reais analisados** (Marketing, GOS, ECC, Econometria, Finanças II do Insper) — confirmaram empiricamente que estrutura institucional é parseable (4 colunas-chave + datas + agrupamento temático), plano é único por matéria por semestre, execução diverge entre turmas (cada turma com ponteiro de progresso próprio)
+- **Sessão 2 de arquitetura (técnica)** no chat: plano arquitetural das 7 frentes aprovado — schema aditivo nunca destrutivo, `Aluno` legado da Camada 1 intocado, `Turma` é a entidade compartilhada central, ponte Camada 1↔Camada 2 = telefone como string (NÃO FK), agregação em lote semanal (não tempo real), relatório servido pelo próprio FastAPI (embrião natural da Camada 3)
+- **Sessão CC #1 — Alembic + baseline**: instalado controle de versão de schema async com asyncpg ANTES de criar qualquer tabela nova; baseline `0001` das 6 tabelas da Camada 1 escrita à mão (fidelidade ao `sql/schema.sql`)
+- **Decisão de segurança consciente:** CC propôs flag `ALEMBIC_ALLOW_PROD` para destravar bloqueio de produção no futuro — **recusada por Leo**. Bloqueio fica incondicional, sem chave. Princípio: não instalar a chave do cofre ao lado do cofre
+- **Validação de fidelidade contra produção** (exigida no chat, contra a fonte certa): rodar baseline em banco de teste só prova que executa, não que bate com produção. Adicionado passo de comparação estrutural contra o banco real do Railway. Dois defeitos `jsonb` (server_default com aspas escapadas em `conversa_sessao.mensagens/contexto` e `instituicao.contato_diretoria`) pegos no banco de teste descartável, corrigidos antes de qualquer toque em produção. Comparação campo a campo das 6 tabelas via console read-only do Railway (sem senha trafegando) — baseline confirmada fiel
 
 ### 08/05/2026 — Deploy Camada 1 + token permanente + validação pipeline
 - **Token permanente Meta:** System User `edubot-api`, app EduBot, scopes `whatsapp_business_messaging` + `whatsapp_business_management`, `expires_at=0`. Debug do 401 revelou "E" duplicado no paste + token temporário expirado
