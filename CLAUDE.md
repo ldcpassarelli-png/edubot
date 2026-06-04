@@ -158,7 +158,7 @@ Estado do onboarding é persistido em `ConversaSessao.contexto` (JSON). Plano pa
 - Ponte Camada 1↔Camada 2 = `aluno_telefone` STRING (não FK) em 4 tabelas: matricula, mensagem, duvida, consentimento_camada2
 - Schema vivo no Alembic (`alembic/versions/`). `sql/schema.sql` é referência histórica da Camada 1.
 
-Modelos SQLAlchemy em `app/models/database.py` cobrem APENAS as 6 tabelas da Camada 1. Modelos da Camada 2 ainda não existem em código de aplicação.
+Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 + 14 Camada 2, adicionados na Sessão CC #3). Os 14 modelos novos NÃO têm `relationship()` nesta fase — só colunas, FKs e UNIQUE constraints fiéis ao schema (validado campo a campo contra banco descartável). Relacionamentos entram quando uma sessão futura precisar.
 
 ---
 
@@ -181,7 +181,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem APENAS as 6 tabelas da Cam
 
 ## 8. Estado atual (atualizar ao fim de cada sessão)
 
-**Última atualização:** 19/05/2026 (Sessão CC #2 — migration 0002 da Camada 2 escrita, validada e commitada local)
+**Última atualização:** 04/06/2026 (Sessão CC #3 — 14 modelos SQLAlchemy da Camada 2 + persistência de mensagem no webhook, validado local)
 
 ### ✅ Pronto e em produção
 
@@ -211,6 +211,15 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem APENAS as 6 tabelas da Cam
 - **Migration `0002_camada2_schema.py`** (Sessão CC #2, 19/05/2026): 14 tabelas novas + 4 UNIQUE compostas + 16 FKs com `ON DELETE` corretos + 8 triggers `updated_at` reusando função da `0001`. Validação completa: `upgrade head` limpo em banco descartável, `pg_dump --schema-only` auditado campo a campo, `downgrade -1` reverte ao estado da `0001` sem erro
 - **Commits locais (sem push):** `db61abf` (setup Alembic + baseline 0001), `fb1df50` (migration 0002 Camada 2). Branch `main` 2 commits à frente de `origin/main`
 - **Stamp em produção:** ainda não feito. Quando feito, segue **exclusivamente** Opção B: `alembic stamp 0001 --sql` → SQL revisado manualmente → aplicado fora do Alembic via psql/console Railway. Mesmo procedimento para `0002` quando chegar a hora. Princípio: não instalar a chave do cofre ao lado do cofre
+
+### ✅ Modelos Camada 2 + persistência de mensagem (Sessão CC #3, 04/06/2026)
+
+- **14 modelos SQLAlchemy** das tabelas da Camada 2 em `app/models/database.py`, junto com os 6 da Camada 1 (mesmo arquivo, mesmo padrão). Sem `relationship()` nesta fase. JSONB explícito (não JSON genérico). Validados campo a campo contra banco descartável: 14/14 sem divergência estrutural
+- **Persistência de mensagem no webhook** (`app/routers/webhook.py`): toda mensagem de ENTRADA e SAÍDA é gravada na tabela `mensagem` (fonte de verdade canônica da Camada 2). Helpers novos: `_ja_processada`, `_gravar_mensagem`, `_responder`, `_conteudo_e_metadados`
+- **Dedup por `whatsapp_message_id`**: antes de processar, checa se a mensagem já foi gravada; se sim, ignora TUDO (não grava, não roda onboarding, não responde) — blinda contra reenvio do Meta avançar a máquina de estados duas vezes. Resolvido só na aplicação (UNIQUE parcial fica pra migration 0003)
+- **`whatsapp.py` intocado**: a gravação da saída mora no webhook; saída grava com `whatsapp_message_id = NULL` (enviar_mensagem_texto retorna só bool)
+- **Camada 1 intacta** (princípio aditivo): onboarding, criação de aluno/sessão e máquina de estados seguem operando — confirmado no teste local (fluxo NOVO → AGUARDANDO_NOME → AGUARDANDO_PLANO)
+- **Sem commit ainda** — aguardando aprovação
 
 ### ❌ Bloqueador ativo — Meta Dev Mode
 
@@ -277,8 +286,8 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 
 1. ✅ **Sessão CC #1 (16/05):** Alembic + baseline `0001` (concluída)
 2. ✅ **Sessão CC #2 (19/05):** migration `0002` com as 14 tabelas (concluída, commit local `fb1df50`, sem push)
-3. ⏭️ **Sessão CC #3 — Modelos SQLAlchemy da Camada 2 + persistência de mensagem no webhook.** Atualizar `app/models/database.py` com as 14 entidades novas. Ligar webhook → grava cada mensagem (entrada e saída) na tabela `mensagem`. Sem classificação ainda — só persistência canônica. Fundação de tudo que vem depois
-4. **Sessão CC #4 — Classificador de mensagem.** Chamada Claude Haiku após gravar mensagem: retorna lista de dúvidas (pode ser vazia ou múltiplas) com categoria + conceito (lookup top-down via plano de aula) + aula. Fallback "captura sem classificar" pra mensagens ambíguas
+3. ✅ **Sessão CC #3 (04/06) — Modelos SQLAlchemy da Camada 2 + persistência de mensagem no webhook** (concluída, validada local, sem push). Os 14 modelos em `database.py`; webhook grava cada mensagem (entrada e saída) em `mensagem` com dedup por `whatsapp_message_id`
+4. ⏭️ **Sessão CC #4 — Classificador de mensagem.** Chamada Claude Haiku após gravar mensagem: retorna lista de dúvidas (pode ser vazia ou múltiplas) com categoria + conceito (lookup top-down via plano de aula) + aula. Fallback "captura sem classificar" pra mensagens ambíguas
 5. **Sessão CC #5 — Agregador semanal de dúvidas.** Lote rodando aos domingos, junta dúvidas da semana por turma, formata estrutura JSON do relatório (3 blocos da Decisão 5 da Sessão 1)
 6. **Sessão CC #6 — Gerador de relatório (Claude Sonnet) + rota `/r/{token}` no FastAPI.** Geração da prosa do bloco 3 + servindo o relatório web pelo próprio app. Mostra histórico do semestre quando aberto (token vence em 14 dias, mas a página agrega todas as semanas da turma daquele semestre)
 7. **Sessão CC #7 — Comandos WhatsApp + onboarding ampliado.** `/revogar`, `/ativar-feedback`, confirmação semanal de progresso pelo professor. Adicionar coleta de consentimento LGPD no fluxo de onboarding (apresentação única, sem barreira recorrente)
@@ -331,6 +340,11 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 - Código de limpeza de JSON duplicado nos 3 métodos do parser (texto, PDF, imagem)
 - Endpoint `GET /api/v1/alunos/{id}/eventos-hoje` retorna 500 quando aluno não existe (deveria ser 404)
 - ~~`webhook.py.backup-antes-onboarding` precisa ser removido~~ ✅ removido em 08/05/2026
+
+### Dívidas técnicas registradas na Sessão CC #3 (04/06/2026)
+
+- **Logging da mensagem de SAÍDA mora no `webhook.py`, não no `whatsapp.py`** (decisão consciente). Consequência: a saída grava com `whatsapp_message_id = NULL`, porque `enviar_mensagem_texto` retorna só `bool`. Quando notificações agendadas entrarem (CC #8), o envio acontecerá fora do webhook — reavaliar mover o logging pro serviço de envio e capturar o id que o Meta devolve, pra correlação com status updates (delivered/read)
+- **Dedup de `whatsapp_message_id` é só na aplicação** (SELECT antes de inserir). Há uma janela de corrida estreita entre dois reenvios quase simultâneos do Meta. A blindagem definitiva é o UNIQUE parcial (`WHERE whatsapp_message_id IS NOT NULL`) — fica pra migration `0003`, antes de produção real
 
 ### Dívidas técnicas registradas na Sessão CC #2 (19/05/2026)
 
@@ -439,6 +453,12 @@ git diff app/routers/webhook.py
 ---
 
 ## 15. Histórico de mudanças importantes
+
+### 04/06/2026 — Sessão CC #3: modelos Camada 2 + persistência de mensagem
+- 14 modelos SQLAlchemy da Camada 2 em `database.py` (sem relationship, JSONB explícito); validados campo a campo contra banco descartável (14/14 fiéis; diferenças de nullable só em colunas com default, idênticas ao padrão da Camada 1)
+- Webhook passa a gravar entrada e saída em `mensagem`; dedup por `whatsapp_message_id` blinda reenvio do Meta (testado: reenvio não duplica linha nem avança estado)
+- `whatsapp.py` intocado; saída grava com id NULL. Duas dívidas registradas (outbound logging no webhook; dedup só na aplicação até migration 0003)
+- 2 arquivos tocados (`database.py`, `webhook.py`). Camada 1 confirmada intacta. Sem commit/push ainda
 
 ### 19/05/2026 — Sessão CC #2: migration 0002 com 14 tabelas da Camada 2
 

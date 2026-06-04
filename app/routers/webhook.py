@@ -22,9 +22,11 @@ import logging
 import hashlib
 import hmac
 from fastapi import APIRouter, Depends, Request, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.connection import get_db
+from app.models.database import Mensagem
 from app.services import onboarding, whatsapp
 
 logger = logging.getLogger("edubot.webhook")
@@ -135,13 +137,31 @@ async def receber_mensagem(
         telefone = mensagem["telefone"]
         tipo = mensagem["tipo"]
         conteudo = mensagem["conteudo"]
+        wam_id = mensagem.get("whatsapp_message_id")
+
+        # Dedup: o Meta reenvia o webhook em caso de timeout. Se já
+        # processamos esse whatsapp_message_id, ignoramos TUDO (não gravamos,
+        # não rodamos onboarding, não respondemos) — senão a máquina de estados
+        # avançaria duas vezes e o aluno receberia respostas repetidas.
+        if wam_id and await _ja_processada(wam_id, db):
+            logger.info(f"🔁 Mensagem {wam_id} já processada — ignorando reenvio do Meta.")
+            return {"status": "ok"}
 
         logger.info(f"📩 Mensagem recebida de {telefone}: tipo={tipo}")
 
+        # Grava a ENTRADA — fonte de verdade canônica das conversas (Camada 2)
+        conteudo_texto, metadados = _conteudo_e_metadados(
+            tipo, conteudo, mensagem.get("wa_timestamp")
+        )
+        await _gravar_mensagem(
+            db, telefone, "entrada", conteudo_texto,
+            whatsapp_message_id=wam_id, metadados=metadados,
+        )
+
         # Tipos fora de escopo hoje — responde mas não processa
         if tipo in ("image", "audio", "video", "sticker", "location"):
-            await whatsapp.enviar_mensagem_texto(
-                telefone,
+            await _responder(
+                db, telefone,
                 "Por enquanto só consigo ler *PDF* e texto. 📎\n"
                 "Pode me mandar o plano de aula como arquivo PDF?",
             )
@@ -153,8 +173,8 @@ async def receber_mensagem(
                 f"Documento não-PDF ignorado de {telefone}: "
                 f"{conteudo.get('mime_type')}"
             )
-            await whatsapp.enviar_mensagem_texto(
-                telefone,
+            await _responder(
+                db, telefone,
                 "Esse tipo de arquivo eu ainda não leio. 😕\n"
                 "Por favor, me manda o plano de aula em *PDF*.",
             )
@@ -170,7 +190,7 @@ async def receber_mensagem(
         )
 
         if resposta:
-            await whatsapp.enviar_mensagem_texto(telefone, resposta)
+            await _responder(db, telefone, resposta)
 
     except Exception as e:
         # Capturar tudo pra garantir 200 pro Meta.
@@ -178,6 +198,88 @@ async def receber_mensagem(
         logger.error(f"Erro ao processar webhook: {e}", exc_info=True)
 
     return {"status": "ok"}
+
+
+# ============================================================
+# Helpers — persistência de mensagem (Camada 2)
+# ============================================================
+
+async def _ja_processada(whatsapp_message_id: str, db: AsyncSession) -> bool:
+    """
+    True se já existe uma mensagem gravada com esse whatsapp_message_id.
+
+    Dedup feito na aplicação (o Meta reenvia webhooks). O UNIQUE parcial no
+    banco fica para a migration 0003 — até lá, há uma janela de corrida estreita
+    entre dois reenvios quase simultâneos. Aceitável para o MVP.
+    """
+    result = await db.execute(
+        select(Mensagem.id).where(Mensagem.whatsapp_message_id == whatsapp_message_id)
+    )
+    return result.first() is not None
+
+
+async def _gravar_mensagem(
+    db: AsyncSession,
+    telefone: str,
+    direcao: str,
+    conteudo: str,
+    whatsapp_message_id: str | None = None,
+    metadados: dict | None = None,
+) -> Mensagem:
+    """Grava uma linha em `mensagem` (entrada ou saída)."""
+    msg = Mensagem(
+        aluno_telefone=telefone,
+        direcao=direcao,
+        conteudo=conteudo or f"[{direcao}]",
+        whatsapp_message_id=whatsapp_message_id,
+        metadados=metadados or {},
+    )
+    db.add(msg)
+    await db.flush()
+    return msg
+
+
+async def _responder(db: AsyncSession, telefone: str, texto: str) -> bool:
+    """
+    Envia uma resposta ao aluno e, se o Meta aceitar, grava a saída em `mensagem`.
+
+    A saída grava com whatsapp_message_id NULL: enviar_mensagem_texto retorna só
+    bool, e nesta sessão whatsapp.py fica intocado (decisão de arquitetura).
+    Dívida registrada: quando notificações agendadas entrarem (CC #8), reavaliar
+    mover o logging pro serviço de envio e capturar o id que o Meta devolve.
+    """
+    enviado = await whatsapp.enviar_mensagem_texto(telefone, texto)
+    if enviado:
+        await _gravar_mensagem(db, telefone, "saida", texto)
+    return enviado
+
+
+def _conteudo_e_metadados(
+    tipo: str, conteudo: dict, wa_timestamp: str | None
+) -> tuple[str, dict]:
+    """
+    Deriva o texto a gravar na coluna `conteudo` (NOT NULL) e os metadados (JSONB).
+
+    Para texto: o corpo da mensagem. Para mídia: um marcador legível + os dados
+    de mídia (media_id, mime_type) vão pros metadados, não pra coluna conteudo.
+    """
+    metadados: dict = {"tipo": tipo}
+    if wa_timestamp:
+        metadados["wa_timestamp"] = wa_timestamp
+
+    if tipo == "text":
+        texto = conteudo.get("texto", "") or "[texto vazio]"
+    elif tipo == "document":
+        nome = conteudo.get("filename") or "arquivo"
+        texto = f"[documento] {nome}"
+        metadados.update({k: v for k, v in conteudo.items() if v})
+    elif tipo == "image":
+        texto = "[imagem]"
+        metadados.update({k: v for k, v in conteudo.items() if v})
+    else:
+        texto = f"[{tipo}]"
+
+    return texto, metadados
 
 
 # ============================================================
@@ -227,6 +329,8 @@ def _extrair_mensagem(payload: dict) -> dict | None:
     mensagem = messages[0]
     telefone = mensagem.get("from", "")
     tipo = mensagem.get("type", "")
+    whatsapp_message_id = mensagem.get("id", "")
+    wa_timestamp = mensagem.get("timestamp")
 
     if not telefone or not tipo:
         logger.warning(f"Mensagem sem telefone ou tipo: {mensagem}")
@@ -260,4 +364,6 @@ def _extrair_mensagem(payload: dict) -> dict | None:
         "telefone": telefone,
         "tipo": tipo,
         "conteudo": conteudo,
+        "whatsapp_message_id": whatsapp_message_id,
+        "wa_timestamp": wa_timestamp,
     }

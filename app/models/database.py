@@ -8,9 +8,9 @@ from datetime import datetime, date, time
 from typing import Optional
 from sqlalchemy import (
     String, Text, Boolean, Integer, Date, Time,
-    DateTime, ForeignKey, Index, JSON
+    DateTime, ForeignKey, Index, JSON, UniqueConstraint
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import (
     DeclarativeBase, Mapped, mapped_column, relationship
 )
@@ -182,3 +182,333 @@ class ConversaSessao(Base):
 
     # Relacionamentos
     aluno: Mapped["Aluno"] = relationship(back_populates="sessao")
+
+
+# ============================================================
+# CAMADA 2 — Inteligência pedagógica (14 tabelas)
+#
+# Schema criado pela migration 0002. Ponte com a Camada 1 é por
+# `aluno_telefone` STRING (não FK) — desacoplamento deliberado.
+# Sem relationship() nesta fase: só colunas, FKs e constraints fiéis
+# ao schema. Relacionamentos entram quando uma sessão futura precisar.
+# ============================================================
+
+
+# ---------- Bloco institucional (7) ----------
+
+class Curso(Base):
+    __tablename__ = "curso"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    instituicao_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("instituicao.id", ondelete="CASCADE"), nullable=False
+    )
+    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MateriaCamada2(Base):
+    __tablename__ = "materia_camada2"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    instituicao_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("instituicao.id", ondelete="CASCADE"), nullable=False
+    )
+    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    codigo: Mapped[Optional[str]] = mapped_column(String(50))
+    categoria: Mapped[Optional[str]] = mapped_column(String(50))
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Professor(Base):
+    __tablename__ = "professor"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    instituicao_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("instituicao.id", ondelete="CASCADE"), nullable=False
+    )
+    nome: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[Optional[str]] = mapped_column(String(255))
+    telefone_whatsapp: Mapped[Optional[str]] = mapped_column(String(20), unique=True)
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class PlanoDeAula(Base):
+    __tablename__ = "plano_de_aula"
+    __table_args__ = (
+        UniqueConstraint("materia_camada2_id", "semestre", name="uq_plano_materia_semestre"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    materia_camada2_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("materia_camada2.id", ondelete="CASCADE"), nullable=False
+    )
+    semestre: Mapped[str] = mapped_column(String(20), nullable=False)
+    documento_url: Mapped[Optional[str]] = mapped_column(Text)
+    documento_parseado: Mapped[Optional[dict]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class UnidadeTematica(Base):
+    __tablename__ = "unidade_tematica"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    plano_de_aula_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("plano_de_aula.id", ondelete="CASCADE"), nullable=False
+    )
+    nome: Mapped[str] = mapped_column(String(500), nullable=False)
+    ordem: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Conceito(Base):
+    __tablename__ = "conceito"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    unidade_tematica_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("unidade_tematica.id", ondelete="CASCADE"), nullable=False
+    )
+    nome: Mapped[str] = mapped_column(String(500), nullable=False)
+    tipo: Mapped[Optional[str]] = mapped_column(String(50))
+    ordem: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Aula(Base):
+    __tablename__ = "aula"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    plano_de_aula_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("plano_de_aula.id", ondelete="CASCADE"), nullable=False
+    )
+    numero: Mapped[int] = mapped_column(Integer, nullable=False)
+    data_prevista: Mapped[Optional[date]] = mapped_column(Date)
+    titulo: Mapped[Optional[str]] = mapped_column(String(500))
+    tipo_atividade: Mapped[Optional[str]] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# ---------- Bloco turma (3) ----------
+
+class Turma(Base):
+    __tablename__ = "turma"
+    __table_args__ = (
+        UniqueConstraint(
+            "materia_camada2_id", "curso_id", "letra", "semestre",
+            name="uq_turma_materia_curso_letra_semestre",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    materia_camada2_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("materia_camada2.id", ondelete="RESTRICT"), nullable=False
+    )
+    curso_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("curso.id", ondelete="RESTRICT"), nullable=False
+    )
+    letra: Mapped[str] = mapped_column(String(20), nullable=False)
+    semestre: Mapped[str] = mapped_column(String(20), nullable=False)
+    professor_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("professor.id", ondelete="SET NULL")
+    )
+    horario: Mapped[Optional[str]] = mapped_column(String(100))
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProgressoTurma(Base):
+    __tablename__ = "progresso_turma"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    turma_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("turma.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    aula_atual_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("aula.id", ondelete="SET NULL")
+    )
+    confirmado_pelo_professor: Mapped[bool] = mapped_column(Boolean, default=False)
+    data_ultima_atualizacao: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Matricula(Base):
+    __tablename__ = "matricula"
+    __table_args__ = (
+        UniqueConstraint("turma_id", "aluno_telefone", name="uq_matricula_turma_aluno"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    turma_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("turma.id", ondelete="CASCADE"), nullable=False
+    )
+    aluno_telefone: Mapped[str] = mapped_column(String(20), nullable=False)
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ---------- Bloco consentimento (1) ----------
+
+class ConsentimentoCamada2(Base):
+    __tablename__ = "consentimento_camada2"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    aluno_telefone: Mapped[str] = mapped_column(String(20), nullable=False)
+    versao_texto: Mapped[str] = mapped_column(String(20), nullable=False)
+    consentiu: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    data_consentimento: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    data_revogacao: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    texto_aceito: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ---------- Bloco captura (3) ----------
+
+class Mensagem(Base):
+    __tablename__ = "mensagem"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    aluno_telefone: Mapped[str] = mapped_column(String(20), nullable=False)
+    direcao: Mapped[str] = mapped_column(String(10), nullable=False)
+    conteudo: Mapped[str] = mapped_column(Text, nullable=False)
+    whatsapp_message_id: Mapped[Optional[str]] = mapped_column(String(255))
+    recebida_em: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    metadados: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Duvida(Base):
+    __tablename__ = "duvida"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    mensagem_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("mensagem.id", ondelete="CASCADE"), nullable=False
+    )
+    turma_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("turma.id", ondelete="CASCADE"), nullable=False
+    )
+    categoria: Mapped[str] = mapped_column(String(20), nullable=False)
+    conceito_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conceito.id", ondelete="SET NULL")
+    )
+    aula_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("aula.id", ondelete="SET NULL")
+    )
+    texto_extraido: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[Optional[dict]] = mapped_column(JSONB)
+    consentimento_camada2: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    aluno_telefone: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class Relatorio(Base):
+    __tablename__ = "relatorio"
+    __table_args__ = (
+        UniqueConstraint("turma_id", "semana_inicio", name="uq_relatorio_turma_semana"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    turma_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("turma.id", ondelete="CASCADE"), nullable=False
+    )
+    semana_inicio: Mapped[date] = mapped_column(Date, nullable=False)
+    semana_fim: Mapped[date] = mapped_column(Date, nullable=False)
+    token_acesso: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, unique=True, default=uuid.uuid4
+    )
+    expira_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    conteudo: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    gerado_em: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    enviado_ao_professor_em: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    acessado_em: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
