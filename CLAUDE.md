@@ -58,7 +58,7 @@ edubot/
 │   ├── main.py              # FastAPI app — lifespan, CORS, rotas, guards de prod
 │   ├── auth.py              # verify_api_key (Frente 2 — API key auth)
 │   ├── models/
-│   │   ├── database.py      # Modelos SQLAlchemy (6 tabelas)
+│   │   ├── database.py      # Modelos SQLAlchemy (20 tabelas: 6 Camada 1 + 14 Camada 2)
 │   │   └── connection.py    # Engine async + session factory
 │   ├── routers/
 │   │   ├── parser.py        # POST /api/v1/parser/{texto,pdf,imagem} — protegido
@@ -67,7 +67,8 @@ edubot/
 │   └── services/
 │       ├── parser.py        # ParserEngine — chama Claude API
 │       ├── whatsapp.py      # Envio de mensagens + download de mídia (Meta API)
-│       └── onboarding.py    # Máquina de estados do onboarding do aluno
+│       ├── onboarding.py    # Máquina de estados do onboarding do aluno
+│       └── classificador.py # ClassificadorEngine (Camada 2) — classifica msg em dúvidas
 ├── sql/
 │   └── schema.sql           # Schema PostgreSQL completo (referência histórica; fonte da verdade agora é Alembic)
 ├── alembic/
@@ -102,6 +103,7 @@ edubot/
    - `ATIVO` → onboarding completo (notificações automáticas ainda não implementadas)
 6. **`whatsapp.enviar_mensagem_texto(telefone, resposta)`** envia a resposta de volta
 7. Webhook retorna 200 ao Meta (sempre — para evitar reenvio)
+8. **(Camada 2, assíncrono)** Se a mensagem é de ENTRADA e `tipo == "text"`, o webhook agenda `classificador.processar_classificacao(...)` como **BackgroundTask** do FastAPI — roda DEPOIS da resposta ao aluno (a resposta é isco, responde rápido sempre). O task abre a PRÓPRIA sessão de banco, resolve turma via `matricula` ativa, chama o Haiku e grava 0/1/N linhas em `duvida`. Falha graciosa: qualquer erro loga e não grava nada — a `mensagem` crua fica intacta.
 
 Estado do onboarding é persistido em `ConversaSessao.contexto` (JSON). Plano parseado fica em `contexto.plano_pendente` até confirmação.
 
@@ -181,7 +183,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 
 ## 8. Estado atual (atualizar ao fim de cada sessão)
 
-**Última atualização:** 04/06/2026 (Sessão CC #3 — 14 modelos SQLAlchemy da Camada 2 + persistência de mensagem no webhook, validado local)
+**Última atualização:** 05/06/2026 (Sessão CC #4 — classificador de mensagem da Camada 2, validado em banco descartável)
 
 ### ✅ Pronto e em produção
 
@@ -219,7 +221,19 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 - **Dedup por `whatsapp_message_id`**: antes de processar, checa se a mensagem já foi gravada; se sim, ignora TUDO (não grava, não roda onboarding, não responde) — blinda contra reenvio do Meta avançar a máquina de estados duas vezes. Resolvido só na aplicação (UNIQUE parcial fica pra migration 0003)
 - **`whatsapp.py` intocado**: a gravação da saída mora no webhook; saída grava com `whatsapp_message_id = NULL` (enviar_mensagem_texto retorna só bool)
 - **Camada 1 intacta** (princípio aditivo): onboarding, criação de aluno/sessão e máquina de estados seguem operando — confirmado no teste local (fluxo NOVO → AGUARDANDO_NOME → AGUARDANDO_PLANO)
-- **Sem commit ainda** — aguardando aprovação
+- **Commitado em 5403dc1, sem push pro Railway.**
+
+### ✅ Classificador de mensagem (Sessão CC #4, 05/06/2026)
+
+- **`app/services/classificador.py`** — `ClassificadorEngine` (espelha `ParserEngine`: httpx direto, Claude Haiku 4.5). `classificar(texto)` devolve `list[DuvidaClassificada]` (0/1/N itens) ou `None` em falha graciosa (erro HTTP, JSON malformado, validação) — provado em teste que o `None` nasce DENTRO do engine
+- **Contrato JSON do Haiku:** `{"duvidas": [{"categoria": "<codigo>", "texto_extraido": "..."}]}`, sem markdown. 4 códigos: `academica` / `organizacional` / `emocional` / `social`. Validado por Pydantic; categoria fora do enum é descartada
+- **Persistência seletiva:** só `academica` e `organizacional` viram linha em `duvida`. `social` (ruído) e `emocional` são detectadas mas **NÃO persistidas** no MVP (constante `CATEGORIAS_NAO_PERSISTIDAS`). Emocional adiada por exigir desenho próprio de agregação (evento temporal, não tópico) + risco de exposição individual — reversível, a mensagem crua fica em `mensagem`
+- **Roda como BackgroundTask** agendado pelo `webhook.py` só para ENTRADA + `tipo == "text"`. Abre a própria sessão (`async_session`), nunca levanta exceção pro request
+- **Resolução de turma via `matricula` ativa** (Caminho A): 0 matrículas → não classifica (estado esperado hoje, ninguém tem matrícula até CC #7); 2+ → guarda defensiva, não classifica; 1 → usa. `consentimento_camada2` é snapshot travado no momento da criação da dúvida (última linha por `data_consentimento`, true só se consentiu e não revogou)
+- **`main.py`** instancia `ClassificadorEngine` no lifespan (cliente próprio, compartilhado) e fecha no shutdown
+- **Validado em banco descartável `edubot_test_cc4`:** 7 cenários → 5 dúvidas gravadas (academica×3, organizacional×1, e os casos social/emocional/malformado/misto com o resultado esperado); consentimento t/f correto; `mensagem` crua intacta em todos. Falha graciosa do engine provada com JSON malformado → `None` + log
+- **Fora de escopo (fast-follow):** lookup de conceito/aula via plano de aula, população de `embedding`, calibração de prompt por matéria — adiados para pós-CC #7
+- **Commitado em <hash>, sem push pro Railway.**
 
 ### ❌ Bloqueador ativo — Meta Dev Mode
 
@@ -240,7 +254,7 @@ Schema completo das 14 tabelas no banco (migration 0002, validada em banco desca
 
 - Modelos SQLAlchemy das 14 tabelas novas (hoje `database.py` só cobre a Camada 1)
 - Persistência de mensagem ligada ao webhook (tabela `mensagem` — fundação de toda Camada 2)
-- Classificador de mensagem (Claude Haiku, 4 categorias, com fallback "captura sem classificar")
+- ~~Classificador de mensagem (Claude Haiku, 4 categorias, com fallback "captura sem classificar")~~ ✅ CC #4 (05/06)
 - Agregador semanal de dúvidas por turma
 - Gerador de relatório (Claude Sonnet, sem material proprietário no MVP)
 - Rota `/r/{token}` no FastAPI (servida pelo próprio app — embrião natural da Camada 3)
@@ -287,7 +301,7 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 1. ✅ **Sessão CC #1 (16/05):** Alembic + baseline `0001` (concluída)
 2. ✅ **Sessão CC #2 (19/05):** migration `0002` com as 14 tabelas (concluída, commit local `fb1df50`, sem push)
 3. ✅ **Sessão CC #3 (04/06) — Modelos SQLAlchemy da Camada 2 + persistência de mensagem no webhook** (concluída, validada local, sem push). Os 14 modelos em `database.py`; webhook grava cada mensagem (entrada e saída) em `mensagem` com dedup por `whatsapp_message_id`
-4. ⏭️ **Sessão CC #4 — Classificador de mensagem.** Chamada Claude Haiku após gravar mensagem: retorna lista de dúvidas (pode ser vazia ou múltiplas) com categoria + conceito (lookup top-down via plano de aula) + aula. Fallback "captura sem classificar" pra mensagens ambíguas
+4. ✅ **Sessão CC #4 (05/06) — Classificador de mensagem** (concluída, validada em banco descartável, sem push). `classificador.py` classifica msg de ENTRADA em 0/1/N dúvidas via Haiku, roda como BackgroundTask; só `academica`/`organizacional` persistem (`social`/`emocional` detectadas mas não gravadas); turma via matrícula ativa; falha graciosa devolve `None`. Conceito/aula/embedding/calibração por matéria ficam pra fast-follow pós-CC #7
 5. **Sessão CC #5 — Agregador semanal de dúvidas.** Lote rodando aos domingos, junta dúvidas da semana por turma, formata estrutura JSON do relatório (3 blocos da Decisão 5 da Sessão 1)
 6. **Sessão CC #6 — Gerador de relatório (Claude Sonnet) + rota `/r/{token}` no FastAPI.** Geração da prosa do bloco 3 + servindo o relatório web pelo próprio app. Mostra histórico do semestre quando aberto (token vence em 14 dias, mas a página agrega todas as semanas da turma daquele semestre)
 7. **Sessão CC #7 — Comandos WhatsApp + onboarding ampliado.** `/revogar`, `/ativar-feedback`, confirmação semanal de progresso pelo professor. Adicionar coleta de consentimento LGPD no fluxo de onboarding (apresentação única, sem barreira recorrente)
@@ -453,6 +467,15 @@ git diff app/routers/webhook.py
 ---
 
 ## 15. Histórico de mudanças importantes
+
+### 05/06/2026 — Sessão CC #4: classificador de mensagem da Camada 2
+- **`app/services/classificador.py`** criado: `ClassificadorEngine` (httpx direto + Claude Haiku 4.5, mesmo padrão do `ParserEngine`). `classificar()` devolve lista de dúvidas ou `None` em falha graciosa. Orquestrador `processar_classificacao()` abre própria sessão, resolve turma via matrícula, grava em `duvida`, nunca levanta
+- **`webhook.py`** agenda a classificação como BackgroundTask só para ENTRADA + `tipo == "text"`, após gravar a `mensagem` e responder ao aluno. `main.py` instancia/fecha o engine no lifespan
+- **Decisão de produto:** `social` e `emocional` são detectadas mas NÃO persistidas no MVP (`CATEGORIAS_NAO_PERSISTIDAS`). Emocional adiada por exigir agregação por evento temporal + risco de exposição individual — reversível (mensagem crua intacta)
+- **Resolução de turma (Caminho A):** via `matricula` ativa. 0 → não classifica (estado esperado até CC #7); 2+ → guarda defensiva; 1 → usa. Consentimento é snapshot travado na criação da dúvida
+- **Validação em banco descartável `edubot_test_cc4`:** 7 cenários → 5 dúvidas (academica×3, organizacional×1; social/emocional/malformado/misto com resultado esperado); consentimento t/f correto; `mensagem` crua intacta. Falha graciosa do engine provada com JSON malformado → `None` + log de erro
+- **Fora de escopo (fast-follow pós-CC #7):** conceito/aula via plano de aula, população de `embedding`, calibração de prompt por matéria
+- 3 arquivos tocados (`classificador.py` novo, `webhook.py`, `main.py`). Camada 1 intacta. Commitado local, sem push
 
 ### 04/06/2026 — Sessão CC #3: modelos Camada 2 + persistência de mensagem
 - 14 modelos SQLAlchemy da Camada 2 em `database.py` (sem relationship, JSONB explícito); validados campo a campo contra banco descartável (14/14 fiéis; diferenças de nullable só em colunas com default, idênticas ao padrão da Camada 1)

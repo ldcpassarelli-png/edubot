@@ -21,13 +21,13 @@ import os
 import logging
 import hashlib
 import hmac
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.connection import get_db
 from app.models.database import Mensagem
-from app.services import onboarding, whatsapp
+from app.services import onboarding, whatsapp, classificador
 
 logger = logging.getLogger("edubot.webhook")
 
@@ -116,6 +116,7 @@ async def _verificar_assinatura(request: Request) -> None:
 @router.post("/webhook")
 async def receber_mensagem(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -153,10 +154,22 @@ async def receber_mensagem(
         conteudo_texto, metadados = _conteudo_e_metadados(
             tipo, conteudo, mensagem.get("wa_timestamp")
         )
-        await _gravar_mensagem(
+        msg = await _gravar_mensagem(
             db, telefone, "entrada", conteudo_texto,
             whatsapp_message_id=wam_id, metadados=metadados,
         )
+
+        # Camada 2: classifica a ENTRADA de texto como BackgroundTask, DEPOIS da
+        # resposta ao aluno (roda após o response; abre a própria sessão de banco).
+        # Só texto: mídia/documento de entrada são artefatos de onboarding, não dúvidas.
+        if tipo == "text":
+            background_tasks.add_task(
+                classificador.processar_classificacao,
+                mensagem_id=msg.id,
+                aluno_telefone=telefone,
+                texto=conteudo_texto,
+                engine=request.app.state.classificador,
+            )
 
         # Tipos fora de escopo hoje — responde mas não processa
         if tipo in ("image", "audio", "video", "sticker", "location"):

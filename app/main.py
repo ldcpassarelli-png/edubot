@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import parser, alunos, webhook
 from app.services.parser import ParserEngine
+from app.services.classificador import ClassificadorEngine
 
 # Logging
 logging.basicConfig(
@@ -77,11 +78,15 @@ async def lifespan(app: FastAPI):
         model=os.getenv("PARSER_MODEL", "claude-haiku-4-5-20251001"),
     )
 
+    # Inicializa classificador (Camada 2) — Haiku dedicado, cliente próprio.
+    app.state.classificador = ClassificadorEngine(api_key=api_key)
+
     logger.info("✅ EduBot pronto!")
     yield
 
     # Shutdown
     await app.state.parser.close()
+    await app.state.classificador.close()
     logger.info("👋 EduBot encerrado.")
 
 
