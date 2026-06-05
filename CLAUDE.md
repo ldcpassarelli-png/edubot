@@ -233,7 +233,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 - **`main.py`** instancia `ClassificadorEngine` no lifespan (cliente próprio, compartilhado) e fecha no shutdown
 - **Validado em banco descartável `edubot_test_cc4`:** 7 cenários → 5 dúvidas gravadas (academica×3, organizacional×1, e os casos social/emocional/malformado/misto com o resultado esperado); consentimento t/f correto; `mensagem` crua intacta em todos. Falha graciosa do engine provada com JSON malformado → `None` + log
 - **Fora de escopo (fast-follow):** lookup de conceito/aula via plano de aula, população de `embedding`, calibração de prompt por matéria — adiados para pós-CC #7
-- **Commitado em <hash>, sem push pro Railway.**
+- **Commitado em `6271934`, sem push pro Railway.**
 
 ### ❌ Bloqueador ativo — Meta Dev Mode
 
