@@ -64,11 +64,14 @@ edubot/
 │   │   ├── parser.py        # POST /api/v1/parser/{texto,pdf,imagem} — protegido
 │   │   ├── alunos.py        # CRUD alunos + matérias + eventos — protegido
 │   │   └── webhook.py       # GET+POST /webhook (WhatsApp) — público (HMAC)
-│   └── services/
-│       ├── parser.py        # ParserEngine — chama Claude API
-│       ├── whatsapp.py      # Envio de mensagens + download de mídia (Meta API)
-│       ├── onboarding.py    # Máquina de estados do onboarding do aluno
-│       └── classificador.py # ClassificadorEngine (Camada 2) — classifica msg em dúvidas
+│   ├── services/
+│   │   ├── parser.py        # ParserEngine — chama Claude API
+│   │   ├── whatsapp.py      # Envio de mensagens + download de mídia (Meta API)
+│   │   ├── onboarding.py    # Máquina de estados do onboarding do aluno
+│   │   ├── classificador.py # ClassificadorEngine (Camada 2) — classifica msg em dúvidas
+│   │   └── agregador.py     # AgregadorEngine (Camada 2) — matching dúvida→conceito + agregação semanal
+│   └── scripts/
+│       └── agregar.py       # Disparo manual do agregador (python -m app.scripts.agregar)
 ├── sql/
 │   └── schema.sql           # Schema PostgreSQL completo (referência histórica; fonte da verdade agora é Alembic)
 ├── alembic/
@@ -235,6 +238,20 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 - **Fora de escopo (fast-follow):** lookup de conceito/aula via plano de aula, população de `embedding`, calibração de prompt por matéria — adiados para pós-CC #7
 - **Commitado em `6271934`, sem push pro Railway.**
 
+### ✅ Agregador semanal de dúvidas (Sessão CC #5, 07/06/2026)
+
+- **`app/services/agregador.py`** — `AgregadorEngine` (espelha `ClassificadorEngine`: httpx + Haiku, falha graciosa). Faz matching dúvida→conceito EM LOTE (1 call por turma) e agrega a semana fechada da turma num JSON estatístico gravado em `relatorio`
+- **Matching (D3):** só toca `duvida` `academica` consentida com `conceito_id IS NULL`. Sem confiança → NULL (balde "não classificadas"). Chute proibido — conceito errado corromperia o relatório. Re-run é estável (não re-sorteia conceito já casado). `mapear_conceitos()` devolve `None` em falha graciosa → tudo fica NULL
+- **`aula_id` (D4):** heurística por data (aula com `data_prevista` mais recente ≤ data da dúvida; senão NULL). Sem Haiku
+- **Janela:** domingo anterior → sábado (semana fechada), `America/Sao_Paulo` via `zoneinfo`. Relatório de domingo cobre a semana que terminou no sábado anterior. Filtro half-open `[domingo 00:00, próximo domingo 00:00)`
+- **Privacidade (LGPD) — decisão de produto fechada na CC #5:** `relatorio.conteudo` é ESTATÍSTICA PURA. NENHUMA mensagem crua e NENHUM telefone entram no JSON — só contagens. "não classificadas" e "organizacional" são só `{volume}` / distribuição temporal. Razão: texto livre pode conter PII de terceiros ("eu e a Maria não entendemos X") — estatística entrega o valor pedagógico sem o risco
+- **Consentimento (D1):** filtra pelo snapshot `duvida.consentimento_camada2 = true` (bool travado na criação pela CC #4); NÃO reconsulta a tabela `consentimento_camada2`
+- **Idempotência:** upsert na UNIQUE `(turma_id, semana_inicio)`. Re-run ATUALIZA a linha; `token_acesso`/`created_at` preservados (token pode já ter ido ao professor) — provado em teste: re-run mantém 1 linha, token estável, `gerado_em` atualizado
+- **`app/scripts/agregar.py`** — disparo manual (`python -m app.scripts.agregar [--data-ref YYYY-MM-DD] [--turma-id UUID]`). Celery+Redis é a CC #8
+- **Validado em banco descartável `edubot_test_cc5`** (recriado do zero — o `edubot_test_cc4` foi dropado e o seed da CC #4 nunca foi commitado): 6 cenários (caminho feliz, matching NULL, consentimento=false fora, não-consolidação, organizacional separado, boundary de janela) + idempotência. SELECT bruto do `relatorio.conteudo` auditado (contagens batem com o seed)
+- **Matching validado AO VIVO** (Haiku real, HTTP 200): das 6 dúvidas academicas na janela, 5 casaram com conceito e o "gráfico de barras no Excel" ficou em NULL (balde "não classificadas") — NULL honesto, sem chute. WACC casou 4× (aluno A 3× + aluno B 1×) e Risco/Retorno 1×. `aula_id` inferido por data bateu (06-01/06-02 → "Risco e Retorno"; 06-03 → "WACC"). A dúvida do aluno sem consentimento e a fora da janela não entraram no relatório
+- **Fora de escopo:** prosa de relatório (Sonnet, CC #6), rota `/r/{token}` (CC #6), `embedding` (Nível 1, não populado), agendamento (CC #8)
+
 ### ❌ Bloqueador ativo — Meta Dev Mode
 
 - App está em **Dev Mode** no Meta. Mensagens reais de WhatsApp **não disparam webhook** — só webhooks de teste do painel funcionam
@@ -302,7 +319,7 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 2. ✅ **Sessão CC #2 (19/05):** migration `0002` com as 14 tabelas (concluída, commit local `fb1df50`, sem push)
 3. ✅ **Sessão CC #3 (04/06) — Modelos SQLAlchemy da Camada 2 + persistência de mensagem no webhook** (concluída, validada local, sem push). Os 14 modelos em `database.py`; webhook grava cada mensagem (entrada e saída) em `mensagem` com dedup por `whatsapp_message_id`
 4. ✅ **Sessão CC #4 (05/06) — Classificador de mensagem** (concluída, validada em banco descartável, sem push). `classificador.py` classifica msg de ENTRADA em 0/1/N dúvidas via Haiku, roda como BackgroundTask; só `academica`/`organizacional` persistem (`social`/`emocional` detectadas mas não gravadas); turma via matrícula ativa; falha graciosa devolve `None`. Conceito/aula/embedding/calibração por matéria ficam pra fast-follow pós-CC #7
-5. **Sessão CC #5 — Agregador semanal de dúvidas.** Lote rodando aos domingos, junta dúvidas da semana por turma, formata estrutura JSON do relatório (3 blocos da Decisão 5 da Sessão 1)
+5. ✅ **Sessão CC #5 (07/06) — Agregador semanal de dúvidas** (concluída, validada em banco descartável `edubot_test_cc5`, sem push). `agregador.py` faz matching dúvida→conceito em lote (Haiku, NULL quando sem confiança) + agrega a semana fechada da turma num JSON estatístico em `relatorio` (upsert idempotente). Disparo manual via `app/scripts/agregar.py`. Decisão de produto: relatório é estatística pura, zero texto cru / zero telefone no JSON. Matching validado ao vivo (Haiku real, HTTP 200): 5 de 6 academicas casadas, "gráfico no Excel" em NULL honesto
 6. **Sessão CC #6 — Gerador de relatório (Claude Sonnet) + rota `/r/{token}` no FastAPI.** Geração da prosa do bloco 3 + servindo o relatório web pelo próprio app. Mostra histórico do semestre quando aberto (token vence em 14 dias, mas a página agrega todas as semanas da turma daquele semestre)
 7. **Sessão CC #7 — Comandos WhatsApp + onboarding ampliado.** `/revogar`, `/ativar-feedback`, confirmação semanal de progresso pelo professor. Adicionar coleta de consentimento LGPD no fluxo de onboarding (apresentação única, sem barreira recorrente)
 8. **Sessão CC #8 — Agendamento automático (Celery + Redis).** Disparo dominical do agregador + envio do relatório via WhatsApp pro professor. **Bloqueado por:** envio fora da janela de 24h exige template aprovado → exige app publicado no Meta → exige Business Verification do CNPJ. Adiar até BV aprovado
@@ -354,6 +371,13 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 - Código de limpeza de JSON duplicado nos 3 métodos do parser (texto, PDF, imagem)
 - Endpoint `GET /api/v1/alunos/{id}/eventos-hoje` retorna 500 quando aluno não existe (deveria ser 404)
 - ~~`webhook.py.backup-antes-onboarding` precisa ser removido~~ ✅ removido em 08/05/2026
+
+### Dívidas técnicas registradas na Sessão CC #5 (07/06/2026)
+
+- **Matching é 1 chamada Haiku por turma/semana, sem cache.** Com muitas turmas isso vira custo/latência — reavaliar batch entre turmas ou cache quando houver volume real
+- **"não classificadas" é só contagem (decisão de privacidade), então o professor não vê o que ficou fora do plano.** Quando `embedding`/clustering bottom-up entrar (pós dado real), o balde NULL vira fonte de descoberta de subtemas — hoje é só um número
+- **`aula_id` por heurística de data ignora turmas adiantadas/atrasadas vs. `progresso_turma`.** Quando o ponteiro de progresso por turma for usado (CC #7), reavaliar inferir aula pelo progresso real, não só pela `data_prevista` do plano
+- **Seed da Camada 2 (`seed_cc5.py`) precisa de flush em camadas** porque os modelos da Camada 2 não têm `relationship()` (decisão CC #3) — o unit of work do SQLAlchemy não ordena inserts entre tabelas sem isso. Vale pra qualquer seed/escrita em lote futura na Camada 2
 
 ### Dívidas técnicas registradas na Sessão CC #3 (04/06/2026)
 
@@ -467,6 +491,14 @@ git diff app/routers/webhook.py
 ---
 
 ## 15. Histórico de mudanças importantes
+
+### 07/06/2026 — Sessão CC #5: agregador semanal de dúvidas
+- **`app/services/agregador.py`** criado: `AgregadorEngine` (httpx + Haiku, espelha o classificador). Matching dúvida→conceito em lote (1 call/turma) + agregação da semana fechada num JSON estatístico gravado em `relatorio` via upsert idempotente
+- **Decisão de produto:** relatório é ESTATÍSTICA AGREGADA PURA — nenhuma mensagem crua, nenhum telefone no `relatorio.conteudo`, só contagens. "não classificadas"/"organizacional" viram só volume/distribuição temporal. Razão: texto livre carrega risco de PII de terceiros
+- **Decisões técnicas:** matching só toca `conceito_id IS NULL` (re-run estável, sem chute); `aula_id` por heurística de data (sem Haiku); consentimento via snapshot na própria dúvida (D1); janela domingo→sábado fechada em `America/Sao_Paulo`
+- **`app/scripts/agregar.py`** — disparo manual (`python -m`), parâmetro de domingo de referência. Celery é CC #8
+- **Validado em `edubot_test_cc5`** (recriado do zero): 6 cenários + idempotência (1 linha, token estável), com SELECT bruto do JSON auditado. 4 arquivos novos (`agregador.py`, `scripts/__init__.py`, `scripts/agregar.py`, seed descartável). Camada 1 e classificador intactos. Sem commit/push
+- **Matching validado AO VIVO** (Haiku real, HTTP 200, key nova reposta no `.env`): 5 de 6 academicas casadas, "gráfico de barras no Excel" em NULL honesto (sem chute); WACC 4× / Risco-Retorno 1×; `aula_id` por data correto; consentimento=false e fora-da-janela não entraram. Relatório auditado por SELECT bruto do `relatorio.conteudo`
 
 ### 05/06/2026 — Sessão CC #4: classificador de mensagem da Camada 2
 - **`app/services/classificador.py`** criado: `ClassificadorEngine` (httpx direto + Claude Haiku 4.5, mesmo padrão do `ParserEngine`). `classificar()` devolve lista de dúvidas ou `None` em falha graciosa. Orquestrador `processar_classificacao()` abre própria sessão, resolve turma via matrícula, grava em `duvida`, nunca levanta
