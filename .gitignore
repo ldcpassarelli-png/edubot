@@ -3,3 +3,7 @@
 venv/
 __pycache__/
 *.pyc
+
+# Seeds descartáveis de validação (rodam só em banco de teste, NUNCA produção).
+# Convenção: seed_test_* = descartável → ignorado | seed_demo_* (e outros) = versionável.
+app/scripts/seed_test_*.py
