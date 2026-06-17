@@ -307,7 +307,7 @@ Não existe em código. Bloqueada por LGPD (consentimento maduro é pré-requisi
 
 - Notificações agendadas (Celery + Redis): lembretes diários e semanais de eventos
 - Texto de consentimento LGPD no onboarding (preparando Camadas 2/3)
-- Frente 3 — Rate limiting (`slowapi`): **entra no pacote do deploy das 7 CCs, antes de qualquer aluno real usar o sistema** (não "antes da publicação do app"). Razão: API Anthropic exposta a tráfego sem limite é risco financeiro direto
+- Frente 3 — Rate limiting (`slowapi`): **entra no pacote do deploy dos commits acumulados, antes de qualquer aluno real usar o sistema** (não "antes da publicação do app"). Razão: API Anthropic exposta a tráfego sem limite é risco financeiro direto (prioridade: webhook do WhatsApp)
 - Frente 4 — CORS restrito (lista explícita de origens em prod)
 - eSIM dedicado para o número oficial (em andamento — Vivo)
 
@@ -321,7 +321,7 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 4. ✅ **Sessão CC #4 (05/06) — Classificador de mensagem** (concluída, validada em banco descartável, sem push). `classificador.py` classifica msg de ENTRADA em 0/1/N dúvidas via Haiku, roda como BackgroundTask; só `academica`/`organizacional` persistem (`social`/`emocional` detectadas mas não gravadas); turma via matrícula ativa; falha graciosa devolve `None`. Conceito/aula/embedding/calibração por matéria ficam pra fast-follow pós-CC #7
 5. ✅ **Sessão CC #5 (07/06) — Agregador semanal de dúvidas** (concluída, validada em banco descartável `edubot_test_cc5`, sem push). `agregador.py` faz matching dúvida→conceito em lote (Haiku, NULL quando sem confiança) + agrega a semana fechada da turma num JSON estatístico em `relatorio` (upsert idempotente). Disparo manual via `app/scripts/agregar.py`. Decisão de produto: relatório é estatística pura, zero texto cru / zero telefone no JSON. Matching validado ao vivo (Haiku real, HTTP 200): 5 de 6 academicas casadas, "gráfico no Excel" em NULL honesto
 
-**⚠️ Deploy das 7 CCs acumuladas — ANTES da CC #6.** A branch `main` está **7 commits à frente de `origin/main`** (de `db61abf` a `4a05a1f`, inclui a migration `0002`). Esse deploy acontece **antes** da CC #6, não depois. Razão: empilhar a CC #6 em cima de 7 commits não-deployados aumenta a superfície do deploy; e a CC #6 precisa testar a rota `/r/{token}` contra ambiente real. Pré-requisito: backup de produção verificado via restore + stamp Opção B (ver regra 15 da §14 e o procedimento de stamp na §8).
+**⚠️ Deploy dos commits locais acumulados (Camada 2 até a CC #5 + docs) — ANTES da CC #6.** A branch `main` está **9 commits à frente de `origin/main`** (de `db61abf`..`390362a`, inclui a migration `0002`). Esse deploy acontece **antes** da CC #6, não depois. Razão: empilhar a CC #6 em cima de 9 commits não-deployados aumenta a superfície do deploy; e a CC #6 precisa testar a rota `/r/{token}` contra ambiente real. Pré-requisito: backup de produção verificado via restore + stamp Opção B (ver regra 15 da §14 e o procedimento de stamp na §8).
 
 6. **Sessão CC #6 — Gerador de relatório (Claude Sonnet) + rota `/r/{token}` no FastAPI.** Geração da prosa do bloco 3 + servindo o relatório web pelo próprio app. Mostra histórico do semestre quando aberto (token vence em 14 dias, mas a página agrega todas as semanas da turma daquele semestre)
 7. **Sessão CC #7 — Comandos WhatsApp + onboarding ampliado.** `/revogar`, `/ativar-feedback`, confirmação semanal de progresso pelo professor. Adicionar coleta de consentimento LGPD no fluxo de onboarding (apresentação única, sem barreira recorrente)
@@ -359,7 +359,7 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 
 ### Pendentes
 
-- **Frente 3 — Rate limiting** (`slowapi`). Risco principal: explosão de custo na API Anthropic se alguém abusar do parser, mesmo com API key. **Timing: entra no pacote do deploy, antes de qualquer aluno real usar o sistema — não "antes da publicação do app".**
+- **Frente 3 — Rate limiting** (`slowapi`). Risco principal: explosão de custo na API Anthropic (custo direto no cartão) se alguém abusar dos caminhos que a chamam, mesmo com API key. **Prioridade de cobertura: o webhook do WhatsApp** — caminho que dispara a chamada Anthropic (via classificador) quando um aluno real manda mensagem; em seguida os endpoints `/parser/*`. **Timing: entra no pacote do deploy, antes de qualquer aluno real usar o sistema — não "antes da publicação do app".**
 - **Frente 4 — CORS restrito.** Hoje é `os.getenv("CORS_ORIGINS", "*")`. Em prod, deve ser lista explícita.
 
 ---
@@ -377,8 +377,10 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 
 ### Dívidas técnicas registradas na consultoria estratégica (15/06/2026)
 
-- **Instrumentar a taxa de classificação por categoria desde o dia 1 em produção.** Logar a distribuição das categorias do classificador (`academica` / `organizacional` / `social` / `emocional` / `nao_classificadas`) a cada mensagem processada. Razão: o seed mostrou NULL honesto baixo, mas o português real de aluno pode elevar o balde "não classificadas" além do que o seed sugere — sem instrumentação, isso só apareceria tarde, com o relatório já pobre. Detectar cedo
-- **Health check com alerta no webhook.** Hoje uma queda do serviço só é descoberta por reclamação de aluno. Falta um monitor ativo do `/health` (ou do webhook) que avise proativamente. Liga com a dívida "sem observabilidade" da subseção de infraestrutura abaixo
+*Nota: os dois itens abaixo foram nomeados na consultoria 15/06 como **riscos técnicos de não-dev** — pontos-cegos que vêm de Leo não ser desenvolvedor (risco prospectivo), não débito já contraído. Ficam registrados aqui por proximidade temática; não são dívida no sentido estrito da seção.*
+
+- **Instrumentar a taxa de classificação por categoria desde o dia 1 em produção.** Logar a distribuição das categorias do classificador (`academica` / `organizacional` / `social` / `emocional` / `nao_classificadas`) a cada mensagem processada. Razão: o seed mostrou NULL honesto baixo, mas o português real de aluno (abreviação, ironia, mistura de matérias) pode elevar o balde "não classificadas" além do que o seed sugere — sem instrumentação, isso só apareceria tarde, com o relatório já pobre. Detectar cedo
+- **Health check com alerta no webhook.** Hoje uma queda do serviço só é descoberta por reclamação de aluno. Falta um monitor ativo do `/health` (ou do webhook) que avise proativamente. Liga com a dívida "sem observabilidade" da subseção de infraestrutura abaixo. Estimativa: uma tarde
 
 ### Dívidas técnicas registradas na Sessão CC #5 (07/06/2026)
 
