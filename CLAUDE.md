@@ -37,16 +37,16 @@ Modelo comercial é **B2B institucional** (não B2B2C). Para detalhes estratégi
 | Linguagem | Python | 3.12 |
 | Framework web | FastAPI | 0.115.0 |
 | Servidor | Uvicorn | 0.30.0 |
-| Banco de dados | PostgreSQL | 16 (via Docker) |
+| Banco de dados | PostgreSQL | **18.3 em produção** · 16 no dev (Docker) — divergência a alinhar |
 | ORM | SQLAlchemy (async) | 2.0.35 |
 | Driver DB | asyncpg | 0.29.0 |
-| Migrações DB | Alembic | 1.13.0 (configurado; baseline 0001 + migration 0002 Camada 2) |
+| Migrações DB | Alembic | 1.13.0 (baseline 0001 + migration 0002; **0002 aplicada em produção 17/06 via SQL manual, Opção B**) |
 | IA / Parser | Claude Haiku 4.5 | via API HTTP (httpx) |
 | HTTP Client | httpx | 0.27.0 |
 | Validação | Pydantic | 2.9.0 |
 | Fila de tarefas | Celery + Redis | 5.4.0 / 5.1.0 (instalado, NÃO implementado) |
 | Deploy | Railway (Nixpacks) | edubot-production-073e.up.railway.app |
-| Containers (dev) | Docker Compose | PostgreSQL 16 + Redis 7 |
+| Containers (dev) | Docker Compose | PostgreSQL 16 + Redis 7 (⚠️ prod roda 18.3 — alinhar dev) |
 
 ---
 
@@ -186,7 +186,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 
 ## 8. Estado atual (atualizar ao fim de cada sessão)
 
-**Última atualização:** 15/06/2026 (consultoria estratégica — sem código; precedida pela Sessão CC #5 de 07/06)
+**Última atualização:** 17/06/2026 (deploy: migration 0002 em produção + rate limiting + push de todos os commits — ver subseção "Deploy Camada 2 + rate limiting" abaixo e §15)
 
 ### ✅ Pronto e em produção
 
@@ -207,15 +207,15 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 - **`app/main.py`** — warning não-fatal no lifespan se `WA_ACCESS_TOKEN` ou `WA_PHONE_NUMBER_ID` faltarem em prod. Commit `2b6e373`
 - **Token permanente Meta** — System User `edubot-api`, app EduBot (`1510528877441440`), scopes `whatsapp_business_messaging` + `whatsapp_business_management`, `expires_at=0`. Validado via curl + debug_token em 08/05/2026
 - **Pipeline ponta-a-ponta validado (08/05/2026):** webhook de teste do painel Meta → HMAC valida → onboarding cria aluno + sessão + transiciona estado → retorna 200. Envio falha corretamente com log "número não autorizado" (esperado em Dev Mode)
-- **HEAD em produção:** `fbdde4d`
+- **HEAD em produção (após este deploy de 08/05):** `fbdde4d` (o HEAD atual é `cb1ea24` — ver subseção de deploy 17/06)
 
 ### ✅ Fundação de banco para Camada 2 (Sessões CC #1 + #2)
 
 - **Alembic configurado** (Sessão CC #1, 16/05/2026): runner async com asyncpg, BLOQUEIO INCONDICIONAL contra Railway/produção via lista de patterns no `env.py` (sem flag de destravar, decisão de segurança consciente)
-- **Baseline `0001_baseline_schema.py`** das 6 tabelas existentes da Camada 1 — validada contra produção campo a campo via console read-only do Railway. Dois defeitos de `jsonb` (server_default com aspas escapadas) pegos no banco de teste descartável e corrigidos antes de qualquer toque em produção
+- **Baseline `0001_baseline_schema.py`** das 6 tabelas da Camada 1. ⚠️ **Correção (17/06):** a comparação "campo a campo" contra produção (console read-only do Railway, 16/05) cobriu **tabelas e colunas — NÃO objetos não-tabela** (funções, triggers, views). O deploy de 17/06 provou que a prod tem só `pgcrypto` + as 6 tabelas: a função `atualizar_updated_at()`, os 3 triggers da Camada 1 (`trg_aluno/materia/conversa_updated`) e as 2 views (`proximos_eventos`, `eventos_hoje`) que a `0001` define **nunca chegaram à prod** (que nasceu do `sql/schema.sql` aplicado à mão, não do Alembic). No deploy: a função foi **criada** (pré-requisito dos triggers da `0002`); as 2 views são **vestigiais** (nenhum código as consulta — os endpoints `proximos-eventos`/`eventos-hoje` vão direto às tabelas via ORM); os 3 triggers seguem **ausentes** em prod (divergência registrada, fora do escopo aditivo do deploy). Ver §11 e §15. (Os 2 defeitos de `jsonb` pegos no banco descartável seguem corrigidos antes de produção.)
 - **Migration `0002_camada2_schema.py`** (Sessão CC #2, 19/05/2026): 14 tabelas novas + 4 UNIQUE compostas + 16 FKs com `ON DELETE` corretos + 8 triggers `updated_at` reusando função da `0001`. Validação completa: `upgrade head` limpo em banco descartável, `pg_dump --schema-only` auditado campo a campo, `downgrade -1` reverte ao estado da `0001` sem erro
-- **Commits locais (sem push):** `db61abf` (setup Alembic + baseline 0001), `fb1df50` (migration 0002 Camada 2). Branch `main` 2 commits à frente de `origin/main`
-- **Stamp em produção:** ainda não feito. Quando feito, segue **exclusivamente** Opção B: `alembic stamp 0001 --sql` → SQL revisado manualmente → aplicado fora do Alembic via psql/console Railway. Mesmo procedimento para `0002` quando chegar a hora. Princípio: não instalar a chave do cofre ao lado do cofre
+- **Commits `db61abf` (Alembic + baseline 0001) e `fb1df50` (migration 0002):** ✅ **pushados em 17/06** no pacote de deploy (`origin/main` em `cb1ea24`).
+- **Stamp em produção:** ✅ **feito em 17/06 via Opção B** (SQL manual, fora do Alembic): `stamp 0001` → `CREATE OR REPLACE FUNCTION atualizar_updated_at()` → `0002.sql`. Resultado: `alembic_version='0002'`. Procedimento e achados na subseção de deploy abaixo e na §15. O princípio segue intacto: o bloqueio do `env.py` contra Railway permanece **incondicional**; migrations de produção são sempre manuais via Opção B.
 
 ### ✅ Modelos Camada 2 + persistência de mensagem (Sessão CC #3, 04/06/2026)
 
@@ -224,7 +224,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 - **Dedup por `whatsapp_message_id`**: antes de processar, checa se a mensagem já foi gravada; se sim, ignora TUDO (não grava, não roda onboarding, não responde) — blinda contra reenvio do Meta avançar a máquina de estados duas vezes. Resolvido só na aplicação (UNIQUE parcial fica pra migration 0003)
 - **`whatsapp.py` intocado**: a gravação da saída mora no webhook; saída grava com `whatsapp_message_id = NULL` (enviar_mensagem_texto retorna só bool)
 - **Camada 1 intacta** (princípio aditivo): onboarding, criação de aluno/sessão e máquina de estados seguem operando — confirmado no teste local (fluxo NOVO → AGUARDANDO_NOME → AGUARDANDO_PLANO)
-- **Commitado em 5403dc1, sem push pro Railway.**
+- **Commitado em `5403dc1` — ✅ pushado em 17/06** (deploy do pacote Camada 2).
 
 ### ✅ Classificador de mensagem (Sessão CC #4, 05/06/2026)
 
@@ -236,7 +236,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 - **`main.py`** instancia `ClassificadorEngine` no lifespan (cliente próprio, compartilhado) e fecha no shutdown
 - **Validado em banco descartável `edubot_test_cc4`:** 7 cenários → 5 dúvidas gravadas (academica×3, organizacional×1, e os casos social/emocional/malformado/misto com o resultado esperado); consentimento t/f correto; `mensagem` crua intacta em todos. Falha graciosa do engine provada com JSON malformado → `None` + log
 - **Fora de escopo (fast-follow):** lookup de conceito/aula via plano de aula, população de `embedding`, calibração de prompt por matéria — adiados para pós-CC #7
-- **Commitado em `6271934`, sem push pro Railway.**
+- **Commitado em `6271934` — ✅ pushado em 17/06.**
 
 ### ✅ Agregador semanal de dúvidas (Sessão CC #5, 07/06/2026)
 
@@ -251,6 +251,15 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 - **Validado em banco descartável `edubot_test_cc5`** (recriado do zero — o `edubot_test_cc4` foi dropado e o seed da CC #4 nunca foi commitado): 6 cenários (caminho feliz, matching NULL, consentimento=false fora, não-consolidação, organizacional separado, boundary de janela) + idempotência. SELECT bruto do `relatorio.conteudo` auditado (contagens batem com o seed)
 - **Matching validado AO VIVO** (Haiku real, HTTP 200): das 6 dúvidas academicas na janela, 5 casaram com conceito e o "gráfico de barras no Excel" ficou em NULL (balde "não classificadas") — NULL honesto, sem chute. WACC casou 4× (aluno A 3× + aluno B 1×) e Risco/Retorno 1×. `aula_id` inferido por data bateu (06-01/06-02 → "Risco e Retorno"; 06-03 → "WACC"). A dúvida do aluno sem consentimento e a fora da janela não entraram no relatório
 - **Fora de escopo:** prosa de relatório (Sonnet, CC #6), rota `/r/{token}` (CC #6), `embedding` (Nível 1, não populado), agendamento (CC #8)
+
+### ✅ Deploy Camada 2 + rate limiting em produção (17/06/2026)
+
+- **Migration `0002` aplicada em produção** via SQL manual (Opção B), em 3 passos atômicos: (1) `stamp 0001` (cria `alembic_version='0001'`); (2) `CREATE OR REPLACE FUNCTION atualizar_updated_at()` (pré-requisito que faltava em prod — ver §11/§15); (3) `0002.sql` (14 tabelas Camada 2 + 8 triggers + `UPDATE` versão → `'0002'`). Validado: 14 tabelas Camada 2 nascem, as 6 da Camada 1 **intactas** (contagens idênticas antes/depois), `alembic_version='0002'`.
+- **Backup verificado via restore** antes da migration (regra 15): `pg_dump -Fc` da prod restaurado num clone Postgres 18 descartável, contagens batendo campo a campo. Plano de rollback escrito antes (Rota A: DROP cirúrgico das 14 tabelas; Rota B: restore do dump).
+- **Ensaio em clone (2A) pegou 2 defeitos antes da prod:** o "stamp 0002" seria destrutivo (`CREATE TABLE` de tabela já existente) e a função `atualizar_updated_at()` não existia em prod. A receita final de 3 passos corrige os dois.
+- **Rate limiting (Frente 3) deployado** — `slowapi`, teto global `300/min` em memória no `POST /webhook`, com 200-no-estouro pro Meta. Commit `cb1ea24`. Testado local (rajada de 360 → 300 passam, 61 cortadas, todas 200).
+- **Push completo:** todos os commits locais acumulados (CC #1–#5 + docs + rate limiting) em `origin/main` (`cb1ea24`). Deploy Railway ACTIVE, boot limpo. Smoke test do pipeline real (botão Test do painel Meta) → linha nova em `mensagem` com o `wamid` do sample = recepção + HMAC + persistência vivos na versão nova. `/health` 200.
+- **HEAD em produção:** `cb1ea24`.
 
 ### ❌ Bloqueador ativo — Meta Dev Mode
 
@@ -307,26 +316,27 @@ Não existe em código. Bloqueada por LGPD (consentimento maduro é pré-requisi
 
 - Notificações agendadas (Celery + Redis): lembretes diários e semanais de eventos
 - Texto de consentimento LGPD no onboarding (preparando Camadas 2/3)
-- Frente 3 — Rate limiting (`slowapi`): **entra no pacote do deploy dos commits acumulados, antes de qualquer aluno real usar o sistema** (não "antes da publicação do app"). Razão: API Anthropic exposta a tráfego sem limite é risco financeiro direto (prioridade: webhook do WhatsApp)
+- ✅ Frente 3 — Rate limiting (`slowapi`): **deployado em 17/06** (commit `cb1ea24`) — teto global `300/min` em memória no `POST /webhook`, 200-no-estouro pro Meta. Ver §10 e §8.
 - Frente 4 — CORS restrito (lista explícita de origens em prod)
 - eSIM dedicado para o número oficial (em andamento — Vivo)
+- **Diretriz de produto — tutoria IA (quando construída; HOJE NÃO EXISTE — o bot só responde com strings fixas da máquina de estados de onboarding):** a tutoria por IA deve ser **100% acadêmica = escopo do curso** — responder dentro do universo do curso e **redirecionar gentilmente** o que estiver fora. NÃO é "recusar tudo que não for conceito puro": dúvida **emocional sobre a matéria** e **organizacional** (prazos/prova) seguem no escopo (isca legítima + sinal pro relatório). Coerente com "resposta é isco" — tutor restrito ao plano de aula.
 
 ### Médio prazo — Camada 2 (schema pronto, falta aplicação)
 
 Sequência de Sessões CC pendentes, em ordem de dependência:
 
 1. ✅ **Sessão CC #1 (16/05):** Alembic + baseline `0001` (concluída)
-2. ✅ **Sessão CC #2 (19/05):** migration `0002` com as 14 tabelas (concluída, commit local `fb1df50`, sem push)
-3. ✅ **Sessão CC #3 (04/06) — Modelos SQLAlchemy da Camada 2 + persistência de mensagem no webhook** (concluída, validada local, sem push). Os 14 modelos em `database.py`; webhook grava cada mensagem (entrada e saída) em `mensagem` com dedup por `whatsapp_message_id`
-4. ✅ **Sessão CC #4 (05/06) — Classificador de mensagem** (concluída, validada em banco descartável, sem push). `classificador.py` classifica msg de ENTRADA em 0/1/N dúvidas via Haiku, roda como BackgroundTask; só `academica`/`organizacional` persistem (`social`/`emocional` detectadas mas não gravadas); turma via matrícula ativa; falha graciosa devolve `None`. Conceito/aula/embedding/calibração por matéria ficam pra fast-follow pós-CC #7
-5. ✅ **Sessão CC #5 (07/06) — Agregador semanal de dúvidas** (concluída, validada em banco descartável `edubot_test_cc5`, sem push). `agregador.py` faz matching dúvida→conceito em lote (Haiku, NULL quando sem confiança) + agrega a semana fechada da turma num JSON estatístico em `relatorio` (upsert idempotente). Disparo manual via `app/scripts/agregar.py`. Decisão de produto: relatório é estatística pura, zero texto cru / zero telefone no JSON. Matching validado ao vivo (Haiku real, HTTP 200): 5 de 6 academicas casadas, "gráfico no Excel" em NULL honesto
+2. ✅ **Sessão CC #2 (19/05):** migration `0002` com as 14 tabelas (concluída, `fb1df50`, ✅ pushada 17/06 — **0002 aplicada em produção**)
+3. ✅ **Sessão CC #3 (04/06) — Modelos SQLAlchemy da Camada 2 + persistência de mensagem no webhook** (concluída, validada local, ✅ pushada 17/06). Os 14 modelos em `database.py`; webhook grava cada mensagem (entrada e saída) em `mensagem` com dedup por `whatsapp_message_id`
+4. ✅ **Sessão CC #4 (05/06) — Classificador de mensagem** (concluída, validada em banco descartável, ✅ pushada 17/06). `classificador.py` classifica msg de ENTRADA em 0/1/N dúvidas via Haiku, roda como BackgroundTask; só `academica`/`organizacional` persistem (`social`/`emocional` detectadas mas não gravadas); turma via matrícula ativa; falha graciosa devolve `None`. Conceito/aula/embedding/calibração por matéria ficam pra fast-follow pós-CC #7
+5. ✅ **Sessão CC #5 (07/06) — Agregador semanal de dúvidas** (concluída, validada em banco descartável `edubot_test_cc5`, ✅ pushada 17/06). `agregador.py` faz matching dúvida→conceito em lote (Haiku, NULL quando sem confiança) + agrega a semana fechada da turma num JSON estatístico em `relatorio` (upsert idempotente). Disparo manual via `app/scripts/agregar.py`. Decisão de produto: relatório é estatística pura, zero texto cru / zero telefone no JSON. Matching validado ao vivo (Haiku real, HTTP 200): 5 de 6 academicas casadas, "gráfico no Excel" em NULL honesto
 
-**⚠️ Deploy dos commits locais acumulados (Camada 2 até a CC #5 + docs) — ANTES da CC #6.** A branch `main` está **vários commits à frente de `origin/main`** (de `db61abf..main`, inclui a migration `0002`). Esse deploy acontece **antes** da CC #6, não depois. Razão: empilhar a CC #6 em cima de vários commits não-deployados aumenta a superfície do deploy; e a CC #6 precisa testar a rota `/r/{token}` contra ambiente real. Pré-requisito: backup de produção verificado via restore + stamp Opção B (ver regra 15 da §14 e o procedimento de stamp na §8).
+**✅ Deploy dos commits locais acumulados (Camada 2 CC #1–#5 + docs + rate limiting) — FEITO em 17/06, antes da CC #6.** O pacote foi pra produção como sessão de deploy dedicada: migration `0002` aplicada via SQL manual (Opção B, com a função `atualizar_updated_at()` criada como pré-requisito), rate limiting deployado, push completo (`origin/main` em `cb1ea24`), backup verificado via restore + plano de rollback, smoke test do pipeline OK. Detalhes na subseção de deploy da §8 e na §15. A CC #6 agora pode testar a rota `/r/{token}` contra ambiente real.
 
 6. **Sessão CC #6 — Gerador de relatório (Claude Sonnet) + rota `/r/{token}` no FastAPI.** Geração da prosa do bloco 3 + servindo o relatório web pelo próprio app. Mostra histórico do semestre quando aberto (token vence em 14 dias, mas a página agrega todas as semanas da turma daquele semestre)
 
    **Extração de subconceito por LLM entra no escopo da CC #6 (decisão 15/06/2026).** O nível de subconceito é o que faz o professor agir — o "tópico"/Conceito top-down do plano de aula é ruído pra ele. Mecanismo (decisão fechada): Haiku/Sonnet lê as dúvidas de cada Conceito-com-volume e nomeia os 2-4 subtemas recorrentes + reincidência por aluno, raciocinando semanticamente (funciona com pouco volume, situação do piloto). NÃO é clustering por embedding — esse segue adiado pra quando houver volume real (centenas de dúvidas); a coluna `embedding` continua criada e não populada. O "NULL honesto" se estende: Haiku sem confiança pra nomear subconceito deixa a dúvida no nível do Conceito. Custo: +1 chamada Haiku por Conceito-com-volume por semana (desprezível no piloto). **A confirmar na sessão de decisão de produto da CC #6:** onde exatamente o subconceito grava no JSONB de `relatorio.conteudo`, se exige ou não migration, e o prompt por categoria de matéria.
-7. **Sessão CC #7 — Comandos WhatsApp + onboarding ampliado.** `/revogar`, `/ativar-feedback`, confirmação semanal de progresso pelo professor. Adicionar coleta de consentimento LGPD no fluxo de onboarding (apresentação única, sem barreira recorrente)
+7. **Sessão CC #7 — Comandos WhatsApp + onboarding ampliado.** `/revogar`, `/ativar-feedback`, confirmação semanal de progresso pelo professor. Adicionar coleta de consentimento LGPD no fluxo de onboarding (apresentação única, sem barreira recorrente). Também: **rate limit por telefone do remetente** (cota por aluno) — o teto global de hoje (300/min) é extintor de anomalia de volume e NÃO cobre "aluno individual abusando"; faz sentido quando houver matrícula (escala com usuários).
 8. **Sessão CC #8 — Agendamento automático (Celery + Redis). ❌ CORTADA do caminho do piloto.** Para 1-2 turmas, o agregador roda **manualmente** via `python -m app.scripts.agregar` todo domingo. Automatizar o processo semanal de 2 turmas é gold-plating. Disparo dominical automático + envio do relatório via WhatsApp pro professor só voltam à mesa quando houver volume real (e, para o envio, depois do BV: fora da janela de 24h exige template aprovado → app publicado no Meta → Business Verification do CNPJ)
 
 **Frente paralela off-Claude (caminho crítico):** Business Verification do CNPJ no Meta (janela 2-4 semanas, detalhada em `pendencias_operacionais.md` no Project do chat). Sem BV, Camada 1 não tem WhatsApp real e Camada 2 não tem agendamento de envio. Sessões CC #3-#7 podem rodar em paralelo à BV.
@@ -359,9 +369,14 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 - **Importante:** chaves DIFERENTES entre dev e prod. Vazamento de dev não compromete prod.
 - **Commit:** `fb0403c`
 
+#### Frente 3 — Rate limiting global no webhook (ativa em prod desde 17/06/2026)
+
+- **Código:** `app/limiter.py` (Limiter `slowapi`, `key_func` constante → teto GLOBAL), `@limiter.limit("300/minute")` no `POST /webhook`, handler de `RateLimitExceeded` que devolve **200** pro `/webhook` no estouro (não 429 — pra não provocar reenvio do Meta; demais rotas recebem 429).
+- **Natureza:** teto global em memória (`memory://`, in-process — não Redis), extintor contra loop/bug/reenvio do Meta, NÃO cota por aluno. `WEBHOOK_RATE_LIMIT` é constante única, afinável. **Extensão futura:** limite por telefone do remetente (cota por aluno), quando houver matrícula — ver CC #7 (§9) e débito (§11).
+- **Dependência:** `slowapi==0.1.10` no `requirements.txt`. **Commit:** `cb1ea24` (deployado 17/06).
+
 ### Pendentes
 
-- **Frente 3 — Rate limiting** (`slowapi`). Risco principal: explosão de custo na API Anthropic (custo direto no cartão) se alguém abusar dos caminhos que a chamam, mesmo com API key. **Prioridade de cobertura: o webhook do WhatsApp** — caminho que dispara a chamada Anthropic (via classificador) quando um aluno real manda mensagem; em seguida os endpoints `/parser/*`. **Timing: entra no pacote do deploy, antes de qualquer aluno real usar o sistema — não "antes da publicação do app".**
 - **Frente 4 — CORS restrito.** Hoje é `os.getenv("CORS_ORIGINS", "*")`. Em prod, deve ser lista explícita.
 
 ---
@@ -376,6 +391,11 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 - Código de limpeza de JSON duplicado nos 3 métodos do parser (texto, PDF, imagem)
 - Endpoint `GET /api/v1/alunos/{id}/eventos-hoje` retorna 500 quando aluno não existe (deveria ser 404)
 - ~~`webhook.py.backup-antes-onboarding` precisa ser removido~~ ✅ removido em 08/05/2026
+
+### Dívidas técnicas registradas no deploy de 17/06/2026
+
+- **Baseline `0001` diverge da produção real (IMPORTANTE).** A prod nasceu de `sql/schema.sql` aplicado à mão, NÃO pelo Alembic. Ela tem apenas `pgcrypto` + as 6 tabelas da Camada 1: a função `atualizar_updated_at()`, os 3 triggers (`trg_aluno/materia/conversa_updated`) e as 2 views (`proximos_eventos`, `eventos_hoje`) que a `0001` define **nunca existiram em prod**. A "validação fiel campo a campo" da `0001` (registrada em 16/05) cobriu só tabelas/colunas — não objetos não-tabela. Estado pós-deploy: a função foi criada (pré-requisito da `0002`); as views são vestigiais (sem uso no código); os 3 triggers continuam **ausentes**. **Decisão pendente:** se/como reconciliar a baseline `0001` com a prod real — sessão própria, não urgente. Liga com a **Regra 16** da §14 (validação de fidelidade deve cobrir objetos não-tabela).
+- **Rate limit por telefone (cota por aluno) ainda não existe — só o teto global.** O `slowapi` deployado em 17/06 é um teto GLOBAL (300/min, extintor de anomalia de volume); NÃO limita um aluno individual abusando dos caminhos que chamam a API Anthropic. Quando houver matrícula (CC #7), adicionar limite por telefone do remetente, que escala com a base de usuários. Ver CC #7 na §9.
 
 ### Dívidas técnicas registradas na consultoria estratégica (15/06/2026)
 
@@ -499,11 +519,23 @@ git diff app/routers/webhook.py
 12. **Git com permissão** — sugere mensagem de commit mas NUNCA commita sem confirmação explícita.
 13. **Deploy manual** — NUNCA faz deploy sozinho.
 14. **Idioma** — toda comunicação em PT-BR.
-15. **Migration em produção exige backup verificado VIA RESTORE.** Antes de tocar o schema de produção (a começar pela migration `0002`), a sequência é obrigatória e nesta ordem: (1) `pg_dump` completo da produção; (2) restaurar o dump num banco clone descartável — isso **prova** que o backup funciona; (3) aplicar o SQL da migration nesse clone primeiro; (4) só então produção, com plano de rollback escrito antes. Princípio: **backup não restaurado é esperança, não backup.**
+15. **Migration em produção exige backup verificado VIA RESTORE.** Antes de tocar o schema de produção (a começar pela migration `0002`), a sequência é obrigatória e nesta ordem: (1) `pg_dump` completo da produção; (2) restaurar o dump num banco clone descartável — isso **prova** que o backup funciona; (3) aplicar o SQL da migration nesse clone primeiro; (4) só então produção, com plano de rollback escrito antes. Princípio: **backup não restaurado é esperança, não backup.** **Comprovada na prática (deploy 17/06):** o ensaio em clone (passo 3) pegou **2 defeitos antes de produção** — o "stamp 0002" destrutivo e a função `atualizar_updated_at()` ausente em prod. A regra não é teórica; foi o ensaio que evitou um deploy quebrado.
+16. **Validação de fidelidade contra produção deve cobrir objetos NÃO-tabela.** Comparar schema esperado vs. produção tem que incluir **funções, triggers, views e extensões** — não só tabelas e colunas. O deploy de 17/06 revelou que a baseline `0001` divergia da prod exatamente nos objetos não-tabela (função/3 triggers/2 views), porque a validação de 16/05 só olhou tabelas/colunas. Antes de qualquer migration que **dependa** de um objeto não-tabela (ex.: triggers que reusam uma função), confirme que esse objeto existe de fato em produção.
 
 ---
 
 ## 15. Histórico de mudanças importantes
+
+### 17/06/2026 — Deploy: migration 0002 em produção + rate limiting + push (sessões 2A/2B/2C)
+
+- **Migration `0002` aplicada em produção** via SQL manual (Opção B), em 3 passos atômicos: `stamp 0001` → `CREATE OR REPLACE FUNCTION atualizar_updated_at()` → `0002.sql` (14 tabelas Camada 2 + 8 triggers + `UPDATE` versão → `'0002'`). Validado contra prod: 14 tabelas Camada 2 nascem, 6 da Camada 1 intactas (contagens idênticas), `alembic_version='0002'`. Smoke test do pipeline real (botão Test do painel Meta) → linha nova em `mensagem`.
+- **Backup verificado via restore (Regra 15, comprovada):** `pg_dump -Fc` da prod restaurado num clone Postgres 18 descartável antes de tocar produção; plano de rollback escrito antes (`ROLLBACK_2b.md`).
+- **Ensaio em clone (2A) pegou 2 defeitos antes da prod:** (1) o "stamp 0002" gerado por `alembic stamp 0002 --sql` recria `alembic_version` do zero → seria destrutivo aplicado após o `0002.sql`; removido da receita. (2) a função `atualizar_updated_at()` não existia em prod → triggers da `0002` falhariam; adicionada como passo 2.
+- **Produção é PostgreSQL 18.3, não 16** (repo/docker-compose assumiam 16). Cliente de deploy: pg_dump/psql 18.4. Divergência dev (16) / prod (18.3) registrada pra alinhar.
+- **Baseline `0001` diverge da prod real:** prod nasceu de `sql/schema.sql` à mão, não do Alembic — tem só `pgcrypto` + as 6 tabelas. A função, os 3 triggers da Camada 1 e as 2 views (`proximos_eventos`, `eventos_hoje`) da `0001` nunca chegaram à prod. Views vestigiais (sem uso no código); função criada no deploy; triggers seguem ausentes (§11). Originou a **Regra 16** (§14).
+- **Rate limiting (Frente 3) deployado:** `slowapi==0.1.10`, `app/limiter.py` (teto global `300/min` em memória no `POST /webhook`, 200-no-estouro pro Meta). Commit `cb1ea24`. Testado local (360 req → 300 passam, 61 cortadas).
+- **Push completo:** todos os commits locais (CC #1–#5 + docs + rate limiting) em `origin/main` (`cb1ea24`). Deploy Railway ACTIVE, boot limpo. **Confirmado:** o Railway não roda Alembic no deploy (só `uvicorn` via Procfile/nixpacks) — o bloqueio incondicional do `env.py` contra Railway segue intacto; migrations de prod são sempre manuais via Opção B.
+- **Artefatos do deploy** preservados em `~/.edubot/` (dumps, SQLs da espinha, `ROLLBACK_2b.md`); a `DATABASE_URL` de prod foi removida do disco ao fim.
 
 ### 07/06/2026 — Sessão CC #5: agregador semanal de dúvidas
 - **`app/services/agregador.py`** criado: `AgregadorEngine` (httpx + Haiku, espelha o classificador). Matching dúvida→conceito em lote (1 call/turma) + agregação da semana fechada num JSON estatístico gravado em `relatorio` via upsert idempotente
@@ -545,7 +577,7 @@ git diff app/routers/webhook.py
 - **Sessão 2 de arquitetura (técnica)** no chat: plano arquitetural das 7 frentes aprovado — schema aditivo nunca destrutivo, `Aluno` legado da Camada 1 intocado, `Turma` é a entidade compartilhada central, ponte Camada 1↔Camada 2 = telefone como string (NÃO FK), agregação em lote semanal (não tempo real), relatório servido pelo próprio FastAPI (embrião natural da Camada 3)
 - **Sessão CC #1 — Alembic + baseline**: instalado controle de versão de schema async com asyncpg ANTES de criar qualquer tabela nova; baseline `0001` das 6 tabelas da Camada 1 escrita à mão (fidelidade ao `sql/schema.sql`)
 - **Decisão de segurança consciente:** CC propôs flag `ALEMBIC_ALLOW_PROD` para destravar bloqueio de produção no futuro — **recusada por Leo**. Bloqueio fica incondicional, sem chave. Princípio: não instalar a chave do cofre ao lado do cofre
-- **Validação de fidelidade contra produção** (exigida no chat, contra a fonte certa): rodar baseline em banco de teste só prova que executa, não que bate com produção. Adicionado passo de comparação estrutural contra o banco real do Railway. Dois defeitos `jsonb` (server_default com aspas escapadas em `conversa_sessao.mensagens/contexto` e `instituicao.contato_diretoria`) pegos no banco de teste descartável, corrigidos antes de qualquer toque em produção. Comparação campo a campo das 6 tabelas via console read-only do Railway (sem senha trafegando) — baseline confirmada fiel
+- **Validação de fidelidade contra produção** (exigida no chat, contra a fonte certa): rodar baseline em banco de teste só prova que executa, não que bate com produção. Adicionado passo de comparação estrutural contra o banco real do Railway. Dois defeitos `jsonb` (server_default com aspas escapadas em `conversa_sessao.mensagens/contexto` e `instituicao.contato_diretoria`) pegos no banco de teste descartável, corrigidos antes de qualquer toque em produção. Comparação campo a campo das 6 tabelas via console read-only do Railway (sem senha trafegando) — baseline confirmada fiel *(⚠️ revisado em 17/06: essa comparação cobriu apenas **tabelas/colunas** — NÃO funções, triggers nem views. O deploy de 17/06 revelou que a função `atualizar_updated_at()`, os 3 triggers e as 2 views da `0001` nunca existiram em prod. Ver entrada de 17/06, §11 e Regra 16 da §14.)*
 
 ### 08/05/2026 — Deploy Camada 1 + token permanente + validação pipeline
 - **Token permanente Meta:** System User `edubot-api`, app EduBot, scopes `whatsapp_business_messaging` + `whatsapp_business_management`, `expires_at=0`. Debug do 401 revelou "E" duplicado no paste + token temporário expirado
