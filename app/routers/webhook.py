@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.connection import get_db
 from app.models.database import Mensagem
 from app.services import onboarding, whatsapp, classificador
+from app.limiter import limiter, WEBHOOK_RATE_LIMIT
 
 logger = logging.getLogger("edubot.webhook")
 
@@ -114,6 +115,7 @@ async def _verificar_assinatura(request: Request) -> None:
 # ============================================================
 
 @router.post("/webhook")
+@limiter.limit(WEBHOOK_RATE_LIMIT)
 async def receber_mensagem(
     request: Request,
     background_tasks: BackgroundTasks,

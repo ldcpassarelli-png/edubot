@@ -4,6 +4,9 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.0
 python-multipart==0.0.9
 
+# Rate limiting (Frente 3 — teto global no webhook)
+slowapi==0.1.10
+
 # Banco de dados
 sqlalchemy[asyncio]==2.0.35
 asyncpg==0.29.0

@@ -6,9 +6,12 @@ import os
 from dotenv import load_dotenv; load_dotenv()
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
+from app.limiter import limiter
 from app.routers import parser, alunos, webhook
 from app.services.parser import ParserEngine
 from app.services.classificador import ClassificadorEngine
@@ -108,6 +111,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================================
+# Rate limiting (Frente 3) — teto global no webhook
+# ============================================================
+app.state.limiter = limiter
+
+
+async def _ratelimit_handler(request: Request, exc: RateLimitExceeded):
+    """
+    O webhook DEVE devolver 200 pro Meta mesmo quando o teto estoura — senão o
+    Meta reenvia a mensagem e piora o loop. Só NÃO processa (não chama a API).
+    Outras rotas (nenhuma limitada hoje) recebem 429 padrão.
+    """
+    if request.url.path == "/webhook":
+        logger.warning("🧯 Teto de rate limit no /webhook — devolvendo 200 sem processar.")
+        return JSONResponse(status_code=200, content={"status": "ok"})
+    return JSONResponse(status_code=429, content={"detail": "rate limit exceeded"})
+
+
+app.add_exception_handler(RateLimitExceeded, _ratelimit_handler)
 
 
 # ============================================================
