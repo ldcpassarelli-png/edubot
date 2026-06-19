@@ -4,6 +4,9 @@ venv/
 __pycache__/
 *.pyc
 
+# Config local do Claude Code / preview (não versionar).
+.claude/
+
 # Seeds descartáveis de validação (rodam só em banco de teste, NUNCA produção).
 # Convenção: seed_test_* = descartável → ignorado | seed_demo_* (e outros) = versionável.
 app/scripts/seed_test_*.py

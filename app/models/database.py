@@ -504,6 +504,7 @@ class Relatorio(Base):
     )
     expira_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     conteudo: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    prosa_acao: Mapped[Optional[str]] = mapped_column(Text)
     gerado_em: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -35,6 +35,7 @@ from app.models.connection import async_session
 from app.models.database import (
     Aula, Conceito, Duvida, PlanoDeAula, Relatorio, Turma, UnidadeTematica,
 )
+from app.services.relatorio_gen import ProsaEngine, SubconceitoEngine, enriquecer
 
 logger = logging.getLogger("edubot.agregador")
 
@@ -391,7 +392,7 @@ async def _montar_conteudo(
 
 async def _upsert_relatorio(
     db: AsyncSession, turma_id: uuid.UUID,
-    semana_inicio: date, semana_fim: date, conteudo: dict,
+    semana_inicio: date, semana_fim: date, conteudo: dict, prosa: str | None,
 ) -> None:
     """
     UNIQUE(turma_id, semana_inicio) garante idempotência. Re-run ATUALIZA a linha;
@@ -405,12 +406,14 @@ async def _upsert_relatorio(
         token_acesso=uuid.uuid4(),
         expira_em=agora + timedelta(days=EXPIRACAO_DIAS),
         conteudo=conteudo,
+        prosa_acao=prosa,
         gerado_em=agora,
     ).on_conflict_do_update(
         index_elements=["turma_id", "semana_inicio"],
         set_={
             "semana_fim": semana_fim,
             "conteudo": conteudo,
+            "prosa_acao": prosa,
             "gerado_em": agora,
             "expira_em": agora + timedelta(days=EXPIRACAO_DIAS),
         },
@@ -425,8 +428,15 @@ async def _upsert_relatorio(
 
 async def processar_agregacao(
     turma_id: uuid.UUID, data_ref: date, engine: AgregadorEngine,
+    *, subc_engine: SubconceitoEngine | None = None,
+    prosa_engine: ProsaEngine | None = None,
 ) -> None:
-    """Matching → agregação → upsert. Abre a própria sessão; nunca levanta."""
+    """
+    Matching → agregação → enriquecimento → upsert. Abre a própria sessão; nunca levanta.
+
+    subc_engine/prosa_engine default None: sem eles, pula o enriquecimento e o
+    comportamento é idêntico ao da CC #5 (estatística pura, prosa NULL).
+    """
     semana_inicio, semana_fim = calcular_janela(data_ref)
     inicio_tz, fim_tz = _limites_tz(semana_inicio, semana_fim)
 
@@ -448,7 +458,15 @@ async def processar_agregacao(
                 db, turma_id, inicio_tz, fim_tz, unidades, conceitos,
                 semana_inicio, semana_fim,
             )
-            await _upsert_relatorio(db, turma_id, semana_inicio, semana_fim, conteudo)
+            prosa = await enriquecer(
+                db, turma, conteudo, aulas,
+                subc_engine=subc_engine, prosa_engine=prosa_engine,
+                inicio_tz=inicio_tz, fim_tz=fim_tz,
+                semana_inicio=semana_inicio, semana_fim=semana_fim,
+            )
+            await _upsert_relatorio(
+                db, turma_id, semana_inicio, semana_fim, conteudo, prosa
+            )
 
             logger.info(
                 f"Agregador: turma {turma_id} | semana {semana_inicio}..{semana_fim} | "

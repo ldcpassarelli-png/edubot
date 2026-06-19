@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Relatório indisponível — EduBot</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.17.0/dist/tabler-icons.min.css">
+<style>
+  :root {
+    --color-text-primary: #1f1e1c;
+    --color-text-secondary: #56544e;
+    --color-text-tertiary: #8a8880;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    min-height: 100vh;
+    background: #faf9f5;
+    color: var(--color-text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .card {
+    max-width: 420px;
+    text-align: center;
+    padding: 40px 28px;
+  }
+  .icon { font-size: 40px; color: var(--color-text-tertiary); }
+  h1 { font-size: 20px; font-weight: 500; margin: 16px 0 8px; }
+  p { font-size: 14px; color: var(--color-text-secondary); line-height: 1.7; margin: 0; }
+</style>
+</head>
+<body>
+<main class="card">
+  <i class="ti ti-link-off icon" aria-hidden="true"></i>
+  {% if motivo == "expirado" %}
+  <h1>Este relatório expirou</h1>
+  <p>O link de um relatório vale por 14 dias. Cada semana gera um relatório novo, com um link próprio — peça ao EduBot o link mais recente da sua turma.</p>
+  {% else %}
+  <h1>Relatório não encontrado</h1>
+  <p>Este link não corresponde a nenhum relatório. Verifique se ele foi copiado por inteiro, ou peça ao EduBot o link mais recente da sua turma.</p>
+  {% endif %}
+</main>
+</body>
+</html>

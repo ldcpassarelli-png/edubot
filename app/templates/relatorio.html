@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{ materia_nome }} · turma {{ turma_letra }} — Relatório pedagógico</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.17.0/dist/tabler-icons.min.css">
+<style>
+  :root {
+    --color-text-primary: #1f1e1c;
+    --color-text-secondary: #56544e;
+    --color-text-tertiary: #8a8880;
+    --color-text-warning: #b3700d;
+    --color-text-danger: #c0392b;
+    --color-text-info: #2f6db0;
+    --color-background-primary: #ffffff;
+    --color-background-secondary: #f3f1ea;
+    --color-background-info: #eef3fb;
+    --color-border-tertiary: #e6e3d9;
+    --border-radius-md: 8px;
+    --border-radius-lg: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: #faf9f5;
+    color: var(--color-text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .page {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 24px 20px 56px;
+  }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px;
+    padding: 0; margin: -1px; overflow: hidden;
+    clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  p { margin: 0; }
+</style>
+</head>
+<body>
+<main class="page">
+
+<h2 class="sr-only">Relatório pedagógico semanal da turma de {{ materia_nome }}, mostrando onde os alunos travaram no nível de subconceito, o contexto temporal do semestre e uma sugestão de ação para o professor.</h2>
+
+<!-- Cabeçalho -->
+<div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; margin-bottom: 4px;">
+  <div>
+    <p style="font-size: 13px; color: var(--color-text-tertiary); margin: 0 0 4px; letter-spacing: 0.02em;">Relatório pedagógico semanal</p>
+    <p style="font-size: 22px; font-weight: 500; margin: 0; color: var(--color-text-primary);">{{ materia_nome }} · turma {{ turma_letra }}</p>
+    <p style="font-size: 14px; color: var(--color-text-secondary); margin: 4px 0 0;">{% if professor_nome %}Prof. {{ professor_nome }}{% endif %}{% if curso_nome %} · {{ curso_nome }}{% endif %} · {{ semestre }}</p>
+  </div>
+  <div style="text-align: right;">
+    <p style="font-size: 13px; color: var(--color-text-tertiary); margin: 0 0 4px;">Semana de referência</p>
+    <p style="font-size: 16px; font-weight: 500; margin: 0; color: var(--color-text-primary);">{{ semana_label }}</p>
+    {% if proxima_aula_titulo %}<p style="font-size: 13px; color: var(--color-text-secondary); margin: 4px 0 0;">próximo marco · {{ proxima_aula_titulo }}</p>{% endif %}
+  </div>
+</div>
+
+<!-- Faixa LGPD -->
+<div style="display: flex; align-items: center; gap: 8px; background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 8px 12px; margin: 14px 0 1.5rem; font-size: 13px; color: var(--color-text-secondary);">
+  <i class="ti ti-lock" style="font-size: 16px;" aria-hidden="true"></i>
+  <span>Você vê só o padrão da turma — nunca o nome nem o texto de nenhum aluno.</span>
+</div>
+
+<!-- Métricas de topo -->
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 2rem;">
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 1rem;">
+    <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0 0 6px;">Dúvidas na semana</p>
+    <p style="font-size: 24px; font-weight: 500; margin: 0;">{{ total_duvidas }}</p>
+  </div>
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 1rem;">
+    <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0 0 6px;">Alunos com dúvida</p>
+    <p style="font-size: 24px; font-weight: 500; margin: 0;">{{ alunos_com_duvida }} <span style="font-size: 14px; color: var(--color-text-tertiary); font-weight: 400;">/ {{ total_alunos }}</span></p>
+  </div>
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 1rem;">
+    <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0 0 6px;">Conceitos travando</p>
+    <p style="font-size: 24px; font-weight: 500; margin: 0;">{{ conceitos_travando }}</p>
+  </div>
+  <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 1rem;">
+    <p style="font-size: 13px; color: var(--color-text-secondary); margin: 0 0 6px;">Próxima aula</p>
+    {% if proxima_aula_titulo %}
+    <p style="font-size: 16px; font-weight: 500; margin: 0; line-height: 1.3;">{{ proxima_aula_titulo }}{% if proxima_aula_data %}<br><span style="font-size: 14px; color: var(--color-text-tertiary); font-weight: 400;">{{ proxima_aula_data }}</span>{% endif %}</p>
+    {% else %}
+    <p style="font-size: 16px; font-weight: 500; margin: 0; color: var(--color-text-tertiary);">—</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Onde a turma travou -->
+<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
+  <i class="ti ti-alert-triangle" style="font-size: 18px; color: var(--color-text-warning);" aria-hidden="true"></i>
+  <h3 style="font-size: 16px; font-weight: 500; margin: 0;">Onde a turma travou essa semana</h3>
+</div>
+
+{% for b in blocos %}
+<div style="background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 1.25rem; margin-bottom: 14px;">
+  <p style="font-size: 12px; color: var(--color-text-tertiary); margin: 0; text-transform: uppercase; letter-spacing: 0.04em;">{{ b.unidade }}</p>
+  <p style="font-size: 16px; font-weight: 500; margin: 0 0 14px;">{{ b.conceito }} <span style="font-size: 13px; color: var(--color-text-tertiary); font-weight: 400;">· {{ b.volume }} dúvida{{ 's' if b.volume != 1 else '' }} · {{ b.alunos }} aluno{{ 's' if b.alunos != 1 else '' }}</span></p>
+
+  {% for s in b.subtemas %}
+  <div style="border-left: 3px solid #EF9F27; padding: 2px 0 2px 14px; border-radius: 0;{{ ' margin-bottom: 12px;' if not loop.last else '' }}">
+    <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 12px;">
+      <p style="font-size: 15px; margin: 0; color: var(--color-text-primary);">{{ s.nome }}</p>
+      <span style="font-size: 13px; color: var(--color-text-secondary); white-space: nowrap;">{{ s.alunos_count }} aluno{{ 's' if s.alunos_count != 1 else '' }}</span>
+    </div>
+    {% if s.reincidentes_count and s.reincidentes_count > 0 %}
+    <p style="font-size: 13px; color: var(--color-text-danger); margin: 4px 0 0; display: flex; align-items: center; gap: 5px;">
+      <i class="ti ti-refresh" style="font-size: 14px;" aria-hidden="true"></i>
+      {{ s.reincidentes_count }} aluno{{ 's' if s.reincidentes_count != 1 else '' }} {{ 'voltaram' if s.reincidentes_count != 1 else 'voltou' }} a esse ponto — não consolidou
+    </p>
+    {% else %}
+    <p style="font-size: 13px; color: var(--color-text-tertiary); margin: 4px 0 0;">sem sinal de reincidência</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endfor %}
+
+{% if nao_classificadas and nao_classificadas > 0 %}
+<p style="font-size: 13px; color: var(--color-text-tertiary); margin: 0 0 14px; padding-left: 2px;">+ {{ nao_classificadas }} dúvida{{ 's' if nao_classificadas != 1 else '' }} acadêmica{{ 's' if nao_classificadas != 1 else '' }} que não casaram com nenhum conceito do plano.</p>
+{% endif %}
+
+<!-- Organizacional (minimizado) -->
+<div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 1rem 1.25rem; margin-bottom: 2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center;">
+    <p style="font-size: 14px; margin: 0; color: var(--color-text-secondary);"><i class="ti ti-calendar-event" style="font-size: 15px; vertical-align: -2px; margin-right: 6px;" aria-hidden="true"></i>Organizacional · logística (prazo, formato, prova)</p>
+    <span style="font-size: 13px; color: var(--color-text-tertiary); white-space: nowrap;">{{ organizacional }} dúvida{{ 's' if organizacional != 1 else '' }}</span>
+  </div>
+</div>
+
+<!-- Contexto do semestre -->
+<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
+  <i class="ti ti-chart-line" style="font-size: 18px; color: var(--color-text-secondary);" aria-hidden="true"></i>
+  <h3 style="font-size: 16px; font-weight: 500; margin: 0;">Contexto do semestre</h3>
+</div>
+
+{% if aula_atual_titulo or proxima_aula_titulo %}
+<p style="font-size: 14px; color: var(--color-text-secondary); margin: 0 0 14px; line-height: 1.7;">{% if aula_atual_titulo %}Turma atualmente em: {{ aula_atual_titulo }}.{% endif %}{% if proxima_aula_titulo %} Próximo marco: {{ proxima_aula_titulo }}{% if proxima_aula_data %} em {{ proxima_aula_data }}{% endif %}.{% endif %}</p>
+{% endif %}
+
+<div style="display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 8px; font-size: 12px; color: var(--color-text-secondary);">
+  <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #EF9F27;"></span>Dúvidas acadêmicas por semana</span>
+  <span style="display: flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 10px; border-radius: 2px; background: #378ADD;"></span>Semana de referência</span>
+</div>
+
+<div style="position: relative; width: 100%; height: 220px; margin-bottom: 2rem;">
+  <canvas id="histChart" role="img" aria-label="Gráfico de barras do volume de dúvidas acadêmicas por semana. O volume sobe gradualmente e atinge o pico na última semana, a de referência.">Volume de dúvidas por semana: {{ chart_data | join(', ') }}.</canvas>
+</div>
+
+<!-- Sugestão de ação -->
+{% if paragrafos %}
+<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
+  <i class="ti ti-bulb" style="font-size: 18px; color: var(--color-text-info);" aria-hidden="true"></i>
+  <h3 style="font-size: 16px; font-weight: 500; margin: 0;">Sugestão de ação</h3>
+</div>
+
+<div style="background: var(--color-background-info); border-radius: var(--border-radius-lg); padding: 1.25rem 1.5rem; margin-bottom: 1rem;">
+  {% for par in paragrafos %}
+  <p style="font-size: 15px; line-height: 1.75; margin: 0{{ ' 0 12px' if not loop.last else '' }}; color: var(--color-text-primary);">{{ par }}</p>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- Rodapé honesto -->
+<p style="font-size: 12px; color: var(--color-text-tertiary); margin: 0; text-align: center; line-height: 1.6;">Estatística agregada da turma · sem texto nem identidade individual · link válido até {{ expira_label }}</p>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+(function(){
+  if (typeof Chart === 'undefined') return;
+  var labels = {{ chart_labels | tojson }};
+  var data = {{ chart_data | tojson }};
+  var colors = data.map(function(_, i){ return i === labels.length - 1 ? '#378ADD' : '#EF9F27'; });
+  new Chart(document.getElementById('histChart'), {
+    type: 'bar',
+    data: { labels: labels, datasets: [{ data: data, backgroundColor: colors, borderRadius: 4, maxBarThickness: 38 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(c){ return c.parsed.y + ' dúvidas'; } } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#888780', font: { size: 12 } } },
+        y: { beginAtZero: true, grid: { color: 'rgba(136,135,128,0.15)' }, ticks: { color: '#888780', font: { size: 12 }, precision: 0 } }
+      }
+    }
+  });
+})();
+</script>
+
+</main>
+</body>
+</html>

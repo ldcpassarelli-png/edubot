@@ -23,6 +23,7 @@ load_dotenv()
 from app.services.agregador import (
     AgregadorEngine, calcular_janela, processar_agregacao, turmas_com_duvidas,
 )
+from app.services.relatorio_gen import ProsaEngine, SubconceitoEngine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,6 +51,8 @@ async def main() -> None:
     if not api_key:
         logger.warning("ANTHROPIC_API_KEY ausente — matching falha graciosamente (tudo NULL).")
     engine = AgregadorEngine(api_key=api_key)
+    subc_engine = SubconceitoEngine(api_key=api_key)
+    prosa_engine = ProsaEngine(api_key=api_key)
 
     try:
         if args.turma_id:
@@ -58,9 +61,14 @@ async def main() -> None:
             turmas = await turmas_com_duvidas(data_ref)
             logger.info(f"{len(turmas)} turma(s) com dúvida na janela.")
         for turma_id in turmas:
-            await processar_agregacao(turma_id, data_ref, engine)
+            await processar_agregacao(
+                turma_id, data_ref, engine,
+                subc_engine=subc_engine, prosa_engine=prosa_engine,
+            )
     finally:
         await engine.close()
+        await subc_engine.close()
+        await prosa_engine.close()
 
 
 if __name__ == "__main__":

@@ -23,6 +23,8 @@ pydantic-settings==2.5.0
 celery==5.4.0
 redis==5.1.0
 
+# Templates (rota /r/{token} — Jinja2 server-side)
+jinja2==3.1.4
+
 # Utilitários
-python-dotenv==1.0.0
 python-dotenv==1.0.0

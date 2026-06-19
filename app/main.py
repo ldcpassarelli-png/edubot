@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
 from app.limiter import limiter
-from app.routers import parser, alunos, webhook
+from app.routers import parser, alunos, webhook, relatorio
 from app.services.parser import ParserEngine
 from app.services.classificador import ClassificadorEngine
 
@@ -140,6 +140,7 @@ app.add_exception_handler(RateLimitExceeded, _ratelimit_handler)
 app.include_router(parser.router, prefix="/api/v1", tags=["Parser"])
 app.include_router(alunos.router, prefix="/api/v1", tags=["Alunos"])
 app.include_router(webhook.router, tags=["WhatsApp Webhook"])
+app.include_router(relatorio.router, tags=["Relatório"])
 
 
 @app.get("/health")

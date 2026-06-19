@@ -16,7 +16,7 @@ EduBot é uma **plataforma de inteligência pedagógica via WhatsApp** para univ
 
 Modelo comercial é **B2B institucional** (não B2B2C). Para detalhes estratégicos, ver `edubot_briefing.md` no chat.
 
-**Estado de implementação:** Camada 1 com código completo e auditado — pendente credenciais Meta e commit/deploy. Camada 2 tem schema (migration `0002`, 14 tabelas), modelos (`database.py`), classificador (CC #4) e agregador semanal (CC #5) prontos e commitados localmente; falta a CC #6 (gerador de prosa + rota `/r/{token}`). Camada 3 continua sem código.
+**Estado de implementação:** Camada 1 com código completo e auditado — pendente credenciais Meta e commit/deploy. Camada 2 tem schema (migration `0002`, 14 tabelas), modelos (`database.py`), classificador (CC #4), agregador semanal (CC #5) e — na **CC #6 (18/06)** — gerador de subconceito (Haiku) + prosa (Sonnet) + rota `/r/{token}` + seed de demo, com a migration `0003`. **CC #1–#5 commitadas e pushadas (17/06); a CC #6 está só no working tree — sem commit, sem deploy.** Camada 3 continua sem código.
 
 ---
 
@@ -40,8 +40,9 @@ Modelo comercial é **B2B institucional** (não B2B2C). Para detalhes estratégi
 | Banco de dados | PostgreSQL | **18.3 em produção** · 16 no dev (Docker) — divergência a alinhar |
 | ORM | SQLAlchemy (async) | 2.0.35 |
 | Driver DB | asyncpg | 0.29.0 |
-| Migrações DB | Alembic | 1.13.0 (baseline 0001 + migration 0002; **0002 aplicada em produção 17/06 via SQL manual, Opção B**) |
-| IA / Parser | Claude Haiku 4.5 | via API HTTP (httpx) |
+| Migrações DB | Alembic | 1.13.0 (baseline 0001 + migrations 0002 e **0003**; **0002 aplicada em produção 17/06 via SQL manual, Opção B**; **0003 escrita na CC #6, validada local, NÃO aplicada em prod**) |
+| IA / Parser + classificação + subconceito | Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) | via API HTTP (httpx) |
+| IA / prosa do relatório (CC #6) | Claude Sonnet 4.6 (`claude-sonnet-4-6`, const `PROSA_MODEL` em `relatorio_gen.py`) | via API HTTP (httpx) |
 | HTTP Client | httpx | 0.27.0 |
 | Validação | Pydantic | 2.9.0 |
 | Fila de tarefas | Celery + Redis | 5.4.0 / 5.1.0 (instalado, NÃO implementado) |
@@ -63,15 +64,19 @@ edubot/
 │   ├── routers/
 │   │   ├── parser.py        # POST /api/v1/parser/{texto,pdf,imagem} — protegido
 │   │   ├── alunos.py        # CRUD alunos + matérias + eventos — protegido
-│   │   └── webhook.py       # GET+POST /webhook (WhatsApp) — público (HMAC)
+│   │   ├── webhook.py       # GET+POST /webhook (WhatsApp) — público (HMAC)
+│   │   └── relatorio.py     # GET /r/{token} (Camada 2, CC #6) — Jinja2, público (token UUID)
 │   ├── services/
 │   │   ├── parser.py        # ParserEngine — chama Claude API
 │   │   ├── whatsapp.py      # Envio de mensagens + download de mídia (Meta API)
 │   │   ├── onboarding.py    # Máquina de estados do onboarding do aluno
 │   │   ├── classificador.py # ClassificadorEngine (Camada 2) — classifica msg em dúvidas
-│   │   └── agregador.py     # AgregadorEngine (Camada 2) — matching dúvida→conceito + agregação semanal
+│   │   ├── agregador.py     # AgregadorEngine (Camada 2) — matching dúvida→conceito + agregação semanal
+│   │   └── relatorio_gen.py # SubconceitoEngine (Haiku) + ProsaEngine (Sonnet) — enriquecimento (CC #6)
+│   ├── templates/           # Jinja2: relatorio.html + relatorio_indisponivel.html (CC #6)
 │   └── scripts/
-│       └── agregar.py       # Disparo manual do agregador (python -m app.scripts.agregar)
+│       ├── agregar.py       # Disparo manual do agregador (python -m app.scripts.agregar)
+│       └── seed_demo_fin2.py  # Seed VERSIONÁVEL de demo (Fin II · 4DPA · Prof. exemplo) — CC #6
 ├── sql/
 │   └── schema.sql           # Schema PostgreSQL completo (referência histórica; fonte da verdade agora é Alembic)
 ├── alembic/
@@ -79,7 +84,8 @@ edubot/
 │   ├── script.py.mako       # Template de migration
 │   └── versions/
 │       ├── 0001_baseline_schema.py    # 6 tabelas Camada 1 (validada contra prod 16/05)
-│       └── 0002_camada2_schema.py     # 14 tabelas Camada 2 (validada em banco descartável 19/05)
+│       ├── 0002_camada2_schema.py     # 14 tabelas Camada 2 (validada em banco descartável 19/05)
+│       └── 0003_prosa_acao_e_unique_wamid.py  # prosa_acao + UNIQUE parcial wamid (CC #6, local)
 ├── alembic.ini              # Config do Alembic
 ├── docker-compose.yml       # PostgreSQL + Redis local
 ├── requirements.txt
@@ -155,7 +161,7 @@ Estado do onboarding é persistido em `ConversaSessao.contexto` (JSON). Plano pa
 |---|---|
 | `mensagem` | Toda mensagem WhatsApp (entrada e saída) que passa pelo webhook. Fonte de verdade canônica das conversas. Imutável (sem updated_at) |
 | `duvida` | Mensagem classificada (4 categorias: academica/organizacional/emocional/social). Tem flag `consentimento_camada2` travada no momento da criação. Tem coluna `embedding JSONB nullable` criada mas NÃO populada no MVP (upgrade futuro de clustering bottom-up) |
-| `relatorio` | Relatório semanal por turma. UNIQUE(turma_id, semana_inicio). Token UUID com expiração de 14 dias |
+| `relatorio` | Relatório semanal por turma. UNIQUE(turma_id, semana_inicio). Token UUID com expiração de 14 dias. **Coluna `prosa_acao TEXT NULL` (migration 0003) guarda a prosa do Sonnet.** Subconceitos vivem DENTRO do JSONB `conteudo` (sem coluna nova): caminho real `conteudo.academica.unidades[].conceitos[].subconceitos[]` = `{nome, alunos_count, reincidentes_count}` |
 
 **Convenções compartilhadas:**
 - PKs UUID com `gen_random_uuid()`; timestamps em TIMESTAMPTZ
@@ -181,12 +187,13 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 | GET | `/webhook` | verify_token (Meta) | ✅ Funcional |
 | POST | `/webhook` | HMAC (Meta) | ✅ Funcional (deploy `0bbe444`, 08/05/2026) |
 | GET | `/health` | público | ✅ Funcional |
+| GET | `/r/{token}` | token UUID (14 dias) | ✅ Funcional (CC #6, **local — não em prod**) — Jinja2 server-side; token inválido/expirado → página "indisponível" 200, nunca 500 |
 
 ---
 
 ## 8. Estado atual (atualizar ao fim de cada sessão)
 
-**Última atualização:** 17/06/2026 (deploy: migration 0002 em produção + rate limiting + push de todos os commits — ver subseção "Deploy Camada 2 + rate limiting" abaixo e §15)
+**Última atualização:** 18/06/2026 (CC #6: subconceito + prosa + rota `/r/{token}` + migration 0003 + seed de demo — build/teste local, **sem commit, sem prod** — ver subseção "CC #6" abaixo e §15)
 
 ### ✅ Pronto e em produção
 
@@ -221,7 +228,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 
 - **14 modelos SQLAlchemy** das tabelas da Camada 2 em `app/models/database.py`, junto com os 6 da Camada 1 (mesmo arquivo, mesmo padrão). Sem `relationship()` nesta fase. JSONB explícito (não JSON genérico). Validados campo a campo contra banco descartável: 14/14 sem divergência estrutural
 - **Persistência de mensagem no webhook** (`app/routers/webhook.py`): toda mensagem de ENTRADA e SAÍDA é gravada na tabela `mensagem` (fonte de verdade canônica da Camada 2). Helpers novos: `_ja_processada`, `_gravar_mensagem`, `_responder`, `_conteudo_e_metadados`
-- **Dedup por `whatsapp_message_id`**: antes de processar, checa se a mensagem já foi gravada; se sim, ignora TUDO (não grava, não roda onboarding, não responde) — blinda contra reenvio do Meta avançar a máquina de estados duas vezes. Resolvido só na aplicação (UNIQUE parcial fica pra migration 0003)
+- **Dedup por `whatsapp_message_id`**: antes de processar, checa se a mensagem já foi gravada; se sim, ignora TUDO (não grava, não roda onboarding, não responde) — blinda contra reenvio do Meta avançar a máquina de estados duas vezes. Resolvido só na aplicação (UNIQUE parcial ✅ entrou na migration `0003` na CC #6, validado local — falta aplicar em prod)
 - **`whatsapp.py` intocado**: a gravação da saída mora no webhook; saída grava com `whatsapp_message_id = NULL` (enviar_mensagem_texto retorna só bool)
 - **Camada 1 intacta** (princípio aditivo): onboarding, criação de aluno/sessão e máquina de estados seguem operando — confirmado no teste local (fluxo NOVO → AGUARDANDO_NOME → AGUARDANDO_PLANO)
 - **Commitado em `5403dc1` — ✅ pushado em 17/06** (deploy do pacote Camada 2).
@@ -260,6 +267,20 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 - **Rate limiting (Frente 3) deployado** — `slowapi`, teto global `300/min` em memória no `POST /webhook`, com 200-no-estouro pro Meta. Commit `cb1ea24`. Testado local (rajada de 360 → 300 passam, 61 cortadas, todas 200).
 - **Push completo:** todos os commits locais acumulados (CC #1–#5 + docs + rate limiting) em `origin/main` (`cb1ea24`). Deploy Railway ACTIVE, boot limpo. Smoke test do pipeline real (botão Test do painel Meta) → linha nova em `mensagem` com o `wamid` do sample = recepção + HMAC + persistência vivos na versão nova. `/health` 200.
 - **HEAD em produção:** `cb1ea24`.
+
+### ✅ Relatório: subconceito + prosa + rota `/r/{token}` + seed de demo (Sessão CC #6, 18/06/2026)
+
+> **Build e teste LOCAL apenas.** Nada commitado, nada em produção. O deploy da migration `0003` + rota é sessão SEPARADA com o ritual da regra 15 (§14).
+
+- **Migration `0003_prosa_acao_e_unique_wamid.py`** (down_revision `0002`): (a) `relatorio.prosa_acao TEXT NULL`; (b) **UNIQUE parcial** em `mensagem.whatsapp_message_id` (`WHERE whatsapp_message_id IS NOT NULL`) que **substitui** o índice normal `idx_mensagem_whatsapp_id` da `0002` — fecha a dívida de dedup só-na-aplicação da CC #2/#3. Validada local: `upgrade head` + `downgrade -1` limpos em `edubot_demo`.
+- **`app/services/relatorio_gen.py`** — dois engines (espelham o agregador: httpx + falha graciosa):
+  - **`SubconceitoEngine` (Haiku):** roda PÓS-agregação, só para Conceito com **volume ≥ 2**. Lê as dúvidas brutas do conceito (anonimizadas: `aluno_1…`, **telefone NUNCA vai ao LLM**), nomeia 2-4 subtemas na LÍNGUA DO CONCEITO. **Contagens (`alunos_count`/`reincidentes_count`) calculadas em Python**, não pedidas ao modelo. NULL honesto = lista vazia. Grava em `conteudo.academica.unidades[].conceitos[].subconceitos[]`. Prompt parametrizado por **categoria de matéria** (`financas` é a do seed). Texto bruto vai ao Haiku transitório, **nunca persiste** — só a estatística entra no JSONB.
+  - **`ProsaEngine` (Sonnet, `claude-sonnet-4-6` via const `PROSA_MODEL`):** lê o `conteudo` JÁ enriquecido + taxonomia do plano + progresso + próximos marcos; escreve a "sugestão de ação" atacando o PORQUÊ (2-4 parágrafos). Sem texto cru, sem material proprietário. Falha graciosa → `None` (página renderiza sem o bloco, sem quebrar).
+- **Ligação no agregador:** `processar_agregacao` recebe os dois engines (kwargs opcionais, default `None` → preserva comportamento CC #5); chama `enriquecer` entre montar conteúdo e upsert; `_upsert_relatorio` grava `prosa_acao`. `app/scripts/agregar.py` instancia e passa os engines.
+- **`app/routers/relatorio.py` + `app/templates/`** — rota `GET /r/{token}` (Jinja2 server-side puro, Chart.js via CDN). Token inválido/expirado → `relatorio_indisponivel.html` via `TemplateResponse` (200, nunca 500). Gráfico de histórico mostra **só semanas ≤ a do token** (nunca futuro). Métricas: dúvidas, "Alunos com dúvida" X/total, conceitos travando, próxima aula (1ª após a semana-ref). `main.py` registra o router.
+- **`app/scripts/seed_demo_fin2.py`** — seed **VERSIONÁVEL** (ativo de venda, não dado real): Finanças II · turma 4DPA · Prof. Exemplo (nome genérico — não usar nome de pessoa real em dado de demo), ~41 alunos (~68% consentem), plano FIXO (não usa o parser), ~58 dúvidas de histórico + ~45 na semana-ref (pré-PI), idempotente. **NÃO hardcoda subconceito nem prosa** — a pipeline real produz. Semana-ref **29/03-04/04** (`--data-ref 2026-04-05`).
+- **Validado AO VIVO em `edubot_demo`** (Haiku + Sonnet reais, HTTP 200): 40 academicas/semana-ref, 39 casadas + 1 NULL honesto; subtemas com não-consolidação real ("5 alunos, 3 voltaram"); curva do histórico crescente (3→40); página renderiza com faixa LGPD no topo, subtema em destaque, vermelho na não-consolidação, prosa do Sonnet conectando à PI. Provado por SELECT bruto + screenshots.
+- **Polimento futuro anotado** (não feito): agrupar conceitos da mesma unidade sob um cabeçalho só (hoje "MODELO DE ÍNDICE ÚNICO" repete por card). O beta caiu sob "Decomposição do risco" sozinho ao subir o volume — sem matching manual.
 
 ### ❌ Bloqueador ativo — Meta Dev Mode
 
@@ -333,9 +354,9 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 
 **✅ Deploy dos commits locais acumulados (Camada 2 CC #1–#5 + docs + rate limiting) — FEITO em 17/06, antes da CC #6.** O pacote foi pra produção como sessão de deploy dedicada: migration `0002` aplicada via SQL manual (Opção B, com a função `atualizar_updated_at()` criada como pré-requisito), rate limiting deployado, push completo (`origin/main` em `cb1ea24`), backup verificado via restore + plano de rollback, smoke test do pipeline OK. Detalhes na subseção de deploy da §8 e na §15. A CC #6 agora pode testar a rota `/r/{token}` contra ambiente real.
 
-6. **Sessão CC #6 — Gerador de relatório (Claude Sonnet) + rota `/r/{token}` no FastAPI.** Geração da prosa do bloco 3 + servindo o relatório web pelo próprio app. Mostra histórico do semestre quando aberto (token vence em 14 dias, mas a página agrega todas as semanas da turma daquele semestre)
+6. ✅ **Sessão CC #6 (18/06) — Subconceito (Haiku) + prosa (Claude Sonnet) + rota `/r/{token}` + migration 0003 + seed de demo** (concluída, **validada local, sem commit, sem prod**). Gerador de subconceito + prosa do bloco 3, relatório web servido pelo próprio app, gráfico de histórico só com semanas passadas. Detalhes na subseção CC #6 da §8 e na §15. **Deploy da 0003 + rota em produção = sessão separada (regra 15).**
 
-   **Extração de subconceito por LLM entra no escopo da CC #6 (decisão 15/06/2026).** O nível de subconceito é o que faz o professor agir — o "tópico"/Conceito top-down do plano de aula é ruído pra ele. Mecanismo (decisão fechada): Haiku/Sonnet lê as dúvidas de cada Conceito-com-volume e nomeia os 2-4 subtemas recorrentes + reincidência por aluno, raciocinando semanticamente (funciona com pouco volume, situação do piloto). NÃO é clustering por embedding — esse segue adiado pra quando houver volume real (centenas de dúvidas); a coluna `embedding` continua criada e não populada. O "NULL honesto" se estende: Haiku sem confiança pra nomear subconceito deixa a dúvida no nível do Conceito. Custo: +1 chamada Haiku por Conceito-com-volume por semana (desprezível no piloto). **A confirmar na sessão de decisão de produto da CC #6:** onde exatamente o subconceito grava no JSONB de `relatorio.conteudo`, se exige ou não migration, e o prompt por categoria de matéria.
+   **Extração de subconceito por LLM entra no escopo da CC #6 (decisão 15/06/2026).** O nível de subconceito é o que faz o professor agir — o "tópico"/Conceito top-down do plano de aula é ruído pra ele. Mecanismo (decisão fechada): Haiku/Sonnet lê as dúvidas de cada Conceito-com-volume e nomeia os 2-4 subtemas recorrentes + reincidência por aluno, raciocinando semanticamente (funciona com pouco volume, situação do piloto). NÃO é clustering por embedding — esse segue adiado pra quando houver volume real (centenas de dúvidas); a coluna `embedding` continua criada e não populada. O "NULL honesto" se estende: Haiku sem confiança pra nomear subconceito deixa a dúvida no nível do Conceito. Custo: +1 chamada Haiku por Conceito-com-volume por semana (desprezível no piloto). **Resolvido na CC #6 (18/06):** o subconceito grava em `conteudo.academica.unidades[].conceitos[].subconceitos[]` (DENTRO do JSONB existente, **sem migration nova pra isso** — a `0003` só adiciona `prosa_acao` + UNIQUE wamid); contagens (`alunos_count`/`reincidentes_count`) calculadas em Python (não pedidas ao modelo); prompt parametrizado por categoria de matéria (`financas` primeiro). Volume mínimo do conceito pra chamar o Haiku = 2.
 7. **Sessão CC #7 — Comandos WhatsApp + onboarding ampliado.** `/revogar`, `/ativar-feedback`, confirmação semanal de progresso pelo professor. Adicionar coleta de consentimento LGPD no fluxo de onboarding (apresentação única, sem barreira recorrente). Também: **rate limit por telefone do remetente** (cota por aluno) — o teto global de hoje (300/min) é extintor de anomalia de volume e NÃO cobre "aluno individual abusando"; faz sentido quando houver matrícula (escala com usuários).
 8. **Sessão CC #8 — Agendamento automático (Celery + Redis). ❌ CORTADA do caminho do piloto.** Para 1-2 turmas, o agregador roda **manualmente** via `python -m app.scripts.agregar` todo domingo. Automatizar o processo semanal de 2 turmas é gold-plating. Disparo dominical automático + envio do relatório via WhatsApp pro professor só voltam à mesa quando houver volume real (e, para o envio, depois do BV: fora da janela de 24h exige template aprovado → app publicado no Meta → Business Verification do CNPJ)
 
@@ -414,14 +435,14 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 ### Dívidas técnicas registradas na Sessão CC #3 (04/06/2026)
 
 - **Logging da mensagem de SAÍDA mora no `webhook.py`, não no `whatsapp.py`** (decisão consciente). Consequência: a saída grava com `whatsapp_message_id = NULL`, porque `enviar_mensagem_texto` retorna só `bool`. Quando notificações agendadas entrarem (CC #8), o envio acontecerá fora do webhook — reavaliar mover o logging pro serviço de envio e capturar o id que o Meta devolve, pra correlação com status updates (delivered/read)
-- **Dedup de `whatsapp_message_id` é só na aplicação** (SELECT antes de inserir). Há uma janela de corrida estreita entre dois reenvios quase simultâneos do Meta. A blindagem definitiva é o UNIQUE parcial (`WHERE whatsapp_message_id IS NOT NULL`) — fica pra migration `0003`, antes de produção real
+- ✅ **(RESOLVIDO na CC #6, validado local — falta aplicar em prod)** **Dedup de `whatsapp_message_id` é só na aplicação** (SELECT antes de inserir). Há uma janela de corrida estreita entre dois reenvios quase simultâneos do Meta. A blindagem definitiva é o UNIQUE parcial (`WHERE whatsapp_message_id IS NOT NULL`) — **entrou na migration `0003`** (substitui o índice normal da 0002). Só vira blindagem real quando a `0003` for aplicada em produção (sessão de deploy própria, regra 15)
 
 ### Dívidas técnicas registradas na Sessão CC #2 (19/05/2026)
 
-- **`mensagem.whatsapp_message_id` é índice normal, não UNIQUE.** Dedup de webhook reenviado fica como responsabilidade da aplicação. Revisar em migration futura antes de produção real — preferência: `UNIQUE WHERE whatsapp_message_id IS NOT NULL` (UNIQUE parcial)
+- ✅ **(RESOLVIDO na CC #6 — migration `0003`, validado local)** **`mensagem.whatsapp_message_id` era índice normal, não UNIQUE.** A `0003` dropa o índice normal e cria `UNIQUE WHERE whatsapp_message_id IS NOT NULL` (UNIQUE parcial; também serve de lookup, sem redundância). Falta aplicar em prod (regra 15)
 - **`duvida.embedding JSONB` criado mas NÃO populado no MVP.** Clustering bottom-up de dúvidas (descoberta de subtemas fora do plano de aula) é upgrade pós-validação. Subida pra "Nível 3" (popular + clusterizar) acontece quando houver 4-6 semanas de dado real de turmas piloto pra tunar threshold com base na realidade, não em chute. Exige: chave de API de embedding (OpenAI ou Voyage), código de embedding no classificador, algoritmo de clustering, integração no relatório. Sessão de produto própria, não adendo
 - **Onboarding da Camada 1 precisa ser ampliado** pra perguntar **letra da turma** quando Camada 2 estiver ativa. Hoje o aluno só identifica matéria; sem letra/curso é impossível agregar dúvidas na turma certa. Mudança vai pra Sessão CC #7 (comandos + onboarding ampliado)
-- **Página `/r/{token}` mostra histórico do semestre da turma**, não apenas a semana de referência do token. Schema não muda; é lógica da rota — implementar na Sessão CC #6. Razão: professor decide o que revisitar baseado em tendência, não em foto isolada de uma semana
+- ✅ **(IMPLEMENTADO na CC #6)** **Página `/r/{token}` mostra histórico do semestre da turma** via gráfico (Chart.js), não apenas a semana de referência do token — e **só semanas ≤ a do token** (nunca futuro). Lógica na rota `app/routers/relatorio.py`; schema não mudou. Razão: professor decide o que revisitar baseado em tendência, não em foto isolada de uma semana
 - **Modelo "Pessoa + PapelNaTurma" descartado.** Versões anteriores do design da Camada 2 mencionavam multi-papel (mesma pessoa como aluno em uma turma, monitor em outra). Decisão final (16/05): monitor não acessa Camada 2, simplificação confirmada. Schema atual tem entidades separadas `aluno` (Camada 1) e `professor` (Camada 2). Se um dia precisar voltar atrás, é refatoração consciente, não esquecimento
 
 ### Falta de infraestrutura
@@ -525,6 +546,17 @@ git diff app/routers/webhook.py
 ---
 
 ## 15. Histórico de mudanças importantes
+
+### 18/06/2026 — Sessão CC #6: subconceito + prosa + rota `/r/{token}` + migration 0003 + seed de demo (build/teste LOCAL)
+
+- **Nada commitado, nada em produção.** Todo o trabalho ficou no working tree, validado em `edubot_demo` (Postgres local). O deploy da `0003` + rota é sessão SEPARADA com o ritual da regra 15.
+- **Migration `0003_prosa_acao_e_unique_wamid.py`** (down_revision `0002`): `relatorio.prosa_acao TEXT NULL` + **UNIQUE parcial** em `mensagem.whatsapp_message_id` substituindo o índice normal da `0002`. `upgrade`/`downgrade` limpos em banco descartável.
+- **`app/services/relatorio_gen.py`** — `SubconceitoEngine` (Haiku, pós-agregação, conceito com volume ≥ 2, grava em `conteudo.academica.unidades[].conceitos[].subconceitos[]`, NULL honesto = lista vazia, contagens em Python, prompt por categoria de matéria) + `ProsaEngine` (Sonnet `claude-sonnet-4-6` via `PROSA_MODEL`, lê o conteúdo já enriquecido, falha graciosa → `None`). Texto bruto vai ao Haiku transitório, nunca persiste.
+- **Ligado no agregador** (`processar_agregacao` + `_upsert_relatorio` gravam `prosa_acao`; `agregar.py` passa os engines). Engines default `None` preservam o comportamento da CC #5.
+- **Rota `GET /r/{token}`** (`app/routers/relatorio.py` + `app/templates/`): Jinja2 server-side, Chart.js via CDN, token 14 dias, página "indisponível" via `TemplateResponse` (200) para inválido/expirado, gráfico só com semanas passadas. `main.py` registra o router.
+- **Seed VERSIONÁVEL `seed_demo_fin2.py`** (Fin II · 4DPA · Prof. exemplo · ~41 alunos · plano fixo · idempotente · semana-ref 29/03-04/04). Não hardcoda subconceito/prosa — a pipeline real produz.
+- **Validado ao vivo** (Haiku+Sonnet reais): 40 academicas/semana-ref, 39 casadas + 1 NULL honesto, subtemas com não-consolidação real ("5 alunos, 3 voltaram"), curva 3→40, página renderiza no nível de venda. SELECT bruto + screenshots auditados.
+- **Diagnóstico registrado:** o painel "Launch preview" do harness serve o arquivo `.html` CRU (sem Jinja); a rota real (`TemplateResponse`) resolve as tags — provado por `curl` bruto (0 tags `{%`/`{{`). Não confundir painel de preview com a rota servida.
 
 ### 17/06/2026 — Deploy: migration 0002 em produção + rate limiting + push (sessões 2A/2B/2C)
 
