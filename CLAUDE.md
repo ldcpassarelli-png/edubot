@@ -16,7 +16,7 @@ EduBot é uma **plataforma de inteligência pedagógica via WhatsApp** para univ
 
 Modelo comercial é **B2B institucional** (não B2B2C). Para detalhes estratégicos, ver `edubot_briefing.md` no chat.
 
-**Estado de implementação:** Camada 1 com código completo e auditado — pendente credenciais Meta e commit/deploy. Camada 2 tem schema (migration `0002`, 14 tabelas), modelos (`database.py`), classificador (CC #4), agregador semanal (CC #5) e — na **CC #6 (18/06)** — gerador de subconceito (Haiku) + prosa (Sonnet) + rota `/r/{token}` + seed de demo, com a migration `0003`. **CC #1–#5 commitadas e pushadas (17/06); a CC #6 está só no working tree — sem commit, sem deploy.** Camada 3 continua sem código.
+**Estado de implementação:** Camada 1 com código completo e auditado — pendente credenciais Meta e commit/deploy. Camada 2 tem schema (migration `0002`, 14 tabelas), modelos (`database.py`), classificador (CC #4), agregador semanal (CC #5) e — na **CC #6 (18/06)** — gerador de subconceito (Haiku) + prosa (Sonnet) + rota `/r/{token}` + seed de demo, com a migration `0003`. **CC #1–#6 commitadas e pushadas; a 0003 + rota `/r/{token}` foram DEPLOYADAS em produção em 18/06 (commit `3fcd947`).** Camada 3 continua sem código.
 
 ---
 
@@ -40,7 +40,7 @@ Modelo comercial é **B2B institucional** (não B2B2C). Para detalhes estratégi
 | Banco de dados | PostgreSQL | **18.3 em produção** · 16 no dev (Docker) — divergência a alinhar |
 | ORM | SQLAlchemy (async) | 2.0.35 |
 | Driver DB | asyncpg | 0.29.0 |
-| Migrações DB | Alembic | 1.13.0 (baseline 0001 + migrations 0002 e **0003**; **0002 aplicada em produção 17/06 via SQL manual, Opção B**; **0003 escrita na CC #6, validada local, NÃO aplicada em prod**) |
+| Migrações DB | Alembic | 1.13.0 (baseline 0001 + migrations 0002 e **0003**; **0002 aplicada em produção 17/06 via SQL manual, Opção B**; **0003 aplicada em produção 18/06, mesma Opção B**) |
 | IA / Parser + classificação + subconceito | Claude Haiku 4.5 (`claude-haiku-4-5-20251001`) | via API HTTP (httpx) |
 | IA / prosa do relatório (CC #6) | Claude Sonnet 4.6 (`claude-sonnet-4-6`, const `PROSA_MODEL` em `relatorio_gen.py`) | via API HTTP (httpx) |
 | HTTP Client | httpx | 0.27.0 |
@@ -187,13 +187,13 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 | GET | `/webhook` | verify_token (Meta) | ✅ Funcional |
 | POST | `/webhook` | HMAC (Meta) | ✅ Funcional (deploy `0bbe444`, 08/05/2026) |
 | GET | `/health` | público | ✅ Funcional |
-| GET | `/r/{token}` | token UUID (14 dias) | ✅ Funcional (CC #6, **local — não em prod**) — Jinja2 server-side; token inválido/expirado → página "indisponível" 200, nunca 500 |
+| GET | `/r/{token}` | token UUID (14 dias) | ✅ Funcional **em produção** (deploy 18/06, `3fcd947`) — Jinja2 server-side; token inválido/expirado → página "indisponível" 200, nunca 500 |
 
 ---
 
 ## 8. Estado atual (atualizar ao fim de cada sessão)
 
-**Última atualização:** 18/06/2026 (CC #6: subconceito + prosa + rota `/r/{token}` + migration 0003 + seed de demo — build/teste local, **sem commit, sem prod** — ver subseção "CC #6" abaixo e §15)
+**Última atualização:** 18/06/2026 (CC #6 **DEPLOYADA**: 0003 aplicada em produção via Opção B + rota `/r/{token}` viva + push `3fcd947` — ver subseção de deploy abaixo e §15)
 
 ### ✅ Pronto e em produção
 
@@ -228,7 +228,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 
 - **14 modelos SQLAlchemy** das tabelas da Camada 2 em `app/models/database.py`, junto com os 6 da Camada 1 (mesmo arquivo, mesmo padrão). Sem `relationship()` nesta fase. JSONB explícito (não JSON genérico). Validados campo a campo contra banco descartável: 14/14 sem divergência estrutural
 - **Persistência de mensagem no webhook** (`app/routers/webhook.py`): toda mensagem de ENTRADA e SAÍDA é gravada na tabela `mensagem` (fonte de verdade canônica da Camada 2). Helpers novos: `_ja_processada`, `_gravar_mensagem`, `_responder`, `_conteudo_e_metadados`
-- **Dedup por `whatsapp_message_id`**: antes de processar, checa se a mensagem já foi gravada; se sim, ignora TUDO (não grava, não roda onboarding, não responde) — blinda contra reenvio do Meta avançar a máquina de estados duas vezes. Resolvido só na aplicação (UNIQUE parcial ✅ entrou na migration `0003` na CC #6, validado local — falta aplicar em prod)
+- **Dedup por `whatsapp_message_id`**: antes de processar, checa se a mensagem já foi gravada; se sim, ignora TUDO (não grava, não roda onboarding, não responde) — blinda contra reenvio do Meta avançar a máquina de estados duas vezes. Resolvido só na aplicação (UNIQUE parcial ✅ migration `0003`, **aplicada em produção 18/06**)
 - **`whatsapp.py` intocado**: a gravação da saída mora no webhook; saída grava com `whatsapp_message_id = NULL` (enviar_mensagem_texto retorna só bool)
 - **Camada 1 intacta** (princípio aditivo): onboarding, criação de aluno/sessão e máquina de estados seguem operando — confirmado no teste local (fluxo NOVO → AGUARDANDO_NOME → AGUARDANDO_PLANO)
 - **Commitado em `5403dc1` — ✅ pushado em 17/06** (deploy do pacote Camada 2).
@@ -270,7 +270,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 
 ### ✅ Relatório: subconceito + prosa + rota `/r/{token}` + seed de demo (Sessão CC #6, 18/06/2026)
 
-> **Build e teste LOCAL apenas.** Nada commitado, nada em produção. O deploy da migration `0003` + rota é sessão SEPARADA com o ritual da regra 15 (§14).
+> **DEPLOYADO em produção (18/06).** Build/teste local validados na sessão de 18/06; o deploy foi feito em sessão própria com o ritual da regra 15 — ver entrada "Deploy CC #6" na §15.
 
 - **Migration `0003_prosa_acao_e_unique_wamid.py`** (down_revision `0002`): (a) `relatorio.prosa_acao TEXT NULL`; (b) **UNIQUE parcial** em `mensagem.whatsapp_message_id` (`WHERE whatsapp_message_id IS NOT NULL`) que **substitui** o índice normal `idx_mensagem_whatsapp_id` da `0002` — fecha a dívida de dedup só-na-aplicação da CC #2/#3. Validada local: `upgrade head` + `downgrade -1` limpos em `edubot_demo`.
 - **`app/services/relatorio_gen.py`** — dois engines (espelham o agregador: httpx + falha graciosa):
@@ -435,11 +435,11 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 ### Dívidas técnicas registradas na Sessão CC #3 (04/06/2026)
 
 - **Logging da mensagem de SAÍDA mora no `webhook.py`, não no `whatsapp.py`** (decisão consciente). Consequência: a saída grava com `whatsapp_message_id = NULL`, porque `enviar_mensagem_texto` retorna só `bool`. Quando notificações agendadas entrarem (CC #8), o envio acontecerá fora do webhook — reavaliar mover o logging pro serviço de envio e capturar o id que o Meta devolve, pra correlação com status updates (delivered/read)
-- ✅ **(RESOLVIDO na CC #6, validado local — falta aplicar em prod)** **Dedup de `whatsapp_message_id` é só na aplicação** (SELECT antes de inserir). Há uma janela de corrida estreita entre dois reenvios quase simultâneos do Meta. A blindagem definitiva é o UNIQUE parcial (`WHERE whatsapp_message_id IS NOT NULL`) — **entrou na migration `0003`** (substitui o índice normal da 0002). Só vira blindagem real quando a `0003` for aplicada em produção (sessão de deploy própria, regra 15)
+- ✅ **(RESOLVIDO em produção — migration `0003` aplicada 18/06)** **Dedup de `whatsapp_message_id` era só na aplicação** (SELECT antes de inserir). A blindagem definitiva é o UNIQUE parcial (`WHERE whatsapp_message_id IS NOT NULL`) — **entrou na migration `0003`** (substitui o índice normal da 0002) e está **ativa em produção desde 18/06**.
 
 ### Dívidas técnicas registradas na Sessão CC #2 (19/05/2026)
 
-- ✅ **(RESOLVIDO na CC #6 — migration `0003`, validado local)** **`mensagem.whatsapp_message_id` era índice normal, não UNIQUE.** A `0003` dropa o índice normal e cria `UNIQUE WHERE whatsapp_message_id IS NOT NULL` (UNIQUE parcial; também serve de lookup, sem redundância). Falta aplicar em prod (regra 15)
+- ✅ **(RESOLVIDO em produção — migration `0003` aplicada 18/06)** **`mensagem.whatsapp_message_id` era índice normal, não UNIQUE.** A `0003` dropa o índice normal e cria `UNIQUE WHERE whatsapp_message_id IS NOT NULL` (UNIQUE parcial; também serve de lookup, sem redundância). Ativo em produção desde 18/06.
 - **`duvida.embedding JSONB` criado mas NÃO populado no MVP.** Clustering bottom-up de dúvidas (descoberta de subtemas fora do plano de aula) é upgrade pós-validação. Subida pra "Nível 3" (popular + clusterizar) acontece quando houver 4-6 semanas de dado real de turmas piloto pra tunar threshold com base na realidade, não em chute. Exige: chave de API de embedding (OpenAI ou Voyage), código de embedding no classificador, algoritmo de clustering, integração no relatório. Sessão de produto própria, não adendo
 - **Onboarding da Camada 1 precisa ser ampliado** pra perguntar **letra da turma** quando Camada 2 estiver ativa. Hoje o aluno só identifica matéria; sem letra/curso é impossível agregar dúvidas na turma certa. Mudança vai pra Sessão CC #7 (comandos + onboarding ampliado)
 - ✅ **(IMPLEMENTADO na CC #6)** **Página `/r/{token}` mostra histórico do semestre da turma** via gráfico (Chart.js), não apenas a semana de referência do token — e **só semanas ≤ a do token** (nunca futuro). Lógica na rota `app/routers/relatorio.py`; schema não mudou. Razão: professor decide o que revisitar baseado em tendência, não em foto isolada de uma semana
@@ -546,6 +546,16 @@ git diff app/routers/webhook.py
 ---
 
 ## 15. Histórico de mudanças importantes
+
+### 18/06/2026 — Deploy CC #6: migration 0003 em produção + rota `/r/{token}` viva (sessões A/B/C/D)
+
+- **Commit `3fcd947` em `origin/main`** (saiu de `0c1426c`): 13 arquivos da CC #6 (migration 0003, `relatorio_gen.py`, rota + templates, seed, ligações no agregador, `database.py`, `requirements.txt`, `CLAUDE.md`). `.claude/` adicionado ao `.gitignore`.
+- **Nome real de professor removido** do seed antes do deploy (era contato real do Insper): `nome="Exemplo"`, arquivo renomeado `seed_demo_fin2_ermel.py` → `seed_demo_fin2.py`, refs no CLAUDE.md ajustadas. Decisão de produto: não usar nome de pessoa real em dado de demo fabricado em produção.
+- **Migration `0003` aplicada em produção** via Opção B (SQL manual atômico, `~/.edubot/0003.sql`): `ALTER TABLE relatorio ADD COLUMN prosa_acao TEXT` + `DROP INDEX` do normal + `CREATE UNIQUE INDEX ... WHERE whatsapp_message_id IS NOT NULL` + `UPDATE alembic_version='0003'`. Exit 0, COMMIT. Validado: coluna text/null, índice UNIQUE parcial, `alembic_version='0003'`, Camada 1+2 intactas dado-a-dado.
+- **Ritual da regra 15 cumprido:** `pg_dump -Fc` da prod (via `DATABASE_PUBLIC_URL`, host proxy.rlwy.net — a URL interna `.railway.internal` não resolve local) → restore num clone Postgres 18 descartável → **prova por contagem** (20 tabelas idênticas prod vs clone) → ensaio da 0003 no clone (limpo) → produção. **Sem duplicatas de `whatsapp_message_id`** (o risco do UNIQUE parcial foi descartado por SELECT). `ROLLBACK_0003.md` escrito e aprovado; **Rota A do rollback provada por EXECUÇÃO no clone** (0003 → 0002 limpo).
+- **Rota `/r/{token}` viva em produção:** `https://edubot-production-073e.up.railway.app/r/{token}`. Deploy Railway ACTIVE (só `uvicorn`, sem Alembic — bloqueio do `env.py` intacto). Smoke test: relatório válido HTTP 200 (renderiza, 0 tags Jinja cruas, prosa do Sonnet), `/r/token-invalido` → "indisponível" 200 (não 500).
+- **Seed rodado em produção** (decisão de produto aprovada): turma fictícia 4DPA + Prof. Exemplo + ~41 alunos + relatório real (pipeline Haiku+Sonnet ao vivo: 40 academicas, 39 casadas, curva 3→40). Token de prova vence **03/07/2026** — é prova de funcionamento, NÃO a URL final; **re-rodar o seed perto da demo de julho**.
+- **Higiene:** `DATABASE_PUBLIC_URL` removida do disco ao fim; preservados `~/.edubot/{0003.sql, ROLLBACK_0003.md, prod_backup_0003_pre.dump}`.
 
 ### 18/06/2026 — Sessão CC #6: subconceito + prosa + rota `/r/{token}` + migration 0003 + seed de demo (build/teste LOCAL)
 
