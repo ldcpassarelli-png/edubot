@@ -331,7 +331,37 @@ class Aula(Base):
     )
 
 
-# ---------- Bloco turma (3) ----------
+# ---------- Bloco turma (coorte + 3) ----------
+#
+# Coorte (migration 0004) é a "turma-Insper" (grade fechada que o codigo_convite
+# abre) ACIMA da Turma. Turma segue sendo classe-de-matéria (unidade do
+# relatório). matricula e duvida foram repontadas pra coorte; duvida.turma_id
+# virou nullable (mantendo a FK turma_id -> turma, CASCADE).
+
+class Coorte(Base):
+    __tablename__ = "coorte"
+    __table_args__ = (
+        UniqueConstraint("curso_id", "letra", "semestre", name="uq_coorte_curso_letra_semestre"),
+        UniqueConstraint("codigo_convite", name="uq_coorte_codigo_convite"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    curso_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("curso.id", ondelete="RESTRICT"), nullable=False
+    )
+    letra: Mapped[str] = mapped_column(String(20), nullable=False)
+    semestre: Mapped[str] = mapped_column(String(20), nullable=False)
+    codigo_convite: Mapped[str] = mapped_column(String(50), nullable=False)
+    ativo: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
 
 class Turma(Base):
     __tablename__ = "turma"
@@ -350,6 +380,9 @@ class Turma(Base):
     )
     curso_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("curso.id", ondelete="RESTRICT"), nullable=False
+    )
+    coorte_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("coorte.id", ondelete="RESTRICT"), nullable=False
     )
     letra: Mapped[str] = mapped_column(String(20), nullable=False)
     semestre: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -393,14 +426,14 @@ class ProgressoTurma(Base):
 class Matricula(Base):
     __tablename__ = "matricula"
     __table_args__ = (
-        UniqueConstraint("turma_id", "aluno_telefone", name="uq_matricula_turma_aluno"),
+        UniqueConstraint("coorte_id", "aluno_telefone", name="uq_matricula_coorte_aluno"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    turma_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("turma.id", ondelete="CASCADE"), nullable=False
+    coorte_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("coorte.id", ondelete="CASCADE"), nullable=False
     )
     aluno_telefone: Mapped[str] = mapped_column(String(20), nullable=False)
     ativo: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -466,8 +499,11 @@ class Duvida(Base):
     mensagem_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("mensagem.id", ondelete="CASCADE"), nullable=False
     )
-    turma_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("turma.id", ondelete="CASCADE"), nullable=False
+    turma_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("turma.id", ondelete="CASCADE")
+    )
+    coorte_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("coorte.id", ondelete="CASCADE"), nullable=False
     )
     categoria: Mapped[str] = mapped_column(String(20), nullable=False)
     conceito_id: Mapped[Optional[uuid.UUID]] = mapped_column(

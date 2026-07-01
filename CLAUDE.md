@@ -118,7 +118,7 @@ Estado do onboarding é persistido em `ConversaSessao.contexto` (JSON). Plano pa
 
 ---
 
-## 6. Banco de dados — 20 tabelas (6 Camada 1 + 14 Camada 2)
+## 6. Banco de dados — 21 tabelas (6 Camada 1 + 15 Camada 2)
 
 ### Camada 1 (6 tabelas, intocadas pela migration 0002)
 
@@ -131,7 +131,7 @@ Estado do onboarding é persistido em `ConversaSessao.contexto` (JSON). Plano pa
 | `notificacao_log` | Registro de mensagens enviadas |
 | `conversa_sessao` | Contexto de conversa para onboarding e chat. Campo `contexto` (JSON) guarda estado da máquina de estados |
 
-### Camada 2 (14 tabelas, adicionadas pela migration 0002 — schema pronto, aplicação ainda não usa)
+### Camada 2 (15 tabelas: 14 da migration 0002 + `coorte` da `0004`)
 
 **Institucional (7):**
 | Tabela | Propósito |
@@ -144,12 +144,13 @@ Estado do onboarding é persistido em `ConversaSessao.contexto` (JSON). Plano pa
 | `conceito` | Nível 2 da taxonomia (conceito específico, ex: "Decomposição de risco") |
 | `aula` | Nível 3 (uma aula específica com data). Paralela a unidade/conceito, não FK direta |
 
-**Turma (3):**
+**Turma (coorte + 3):**
 | Tabela | Propósito |
 |---|---|
-| `turma` | Turma específica. UNIQUE(materia, curso, letra, semestre). FKs com ON DELETE RESTRICT em matéria e curso (defesa contra exclusão acidental). `letra VARCHAR(20)` |
+| `coorte` | **(migration 0004)** A "turma-Insper" (grade fechada que o `codigo_convite` abre) ACIMA da `turma`. FK `curso_id` → curso (RESTRICT), `letra`, `semestre`, `codigo_convite` UNIQUE, `ativo`, timestamps. UNIQUE(curso_id, letra, semestre). Agrupa turmas; cada turma mantém seu próprio `professor_id` |
+| `turma` | Turma específica (classe-de-matéria, unidade do relatório). UNIQUE(materia, curso, letra, semestre). FKs ON DELETE RESTRICT em matéria e curso. **Ganhou `coorte_id NOT NULL` (FK → coorte, RESTRICT) na `0004`.** `letra VARCHAR(20)` |
 | `progresso_turma` | Ponteiro "em qual aula a turma está agora". UNIQUE(turma_id) — 1 progresso por turma |
-| `matricula` | Aluno↔turma. **`aluno_telefone` é STRING, deliberadamente NÃO FK** — desacopla camadas em nível de banco |
+| `matricula` | **Aluno↔coorte (repontada na `0004`: era Aluno↔turma).** `turma_id` DROPADA; agora `coorte_id NOT NULL` (FK → coorte CASCADE), UNIQUE(coorte_id, aluno_telefone). O `aluno_telefone` segue STRING deliberadamente NÃO-FK (ponte Camada 1↔2 desacoplada); o acoplamento por FK existe só dentro da Camada 2, para a coorte |
 
 **Consentimento (1):**
 | Tabela | Propósito |
@@ -160,16 +161,16 @@ Estado do onboarding é persistido em `ConversaSessao.contexto` (JSON). Plano pa
 | Tabela | Propósito |
 |---|---|
 | `mensagem` | Toda mensagem WhatsApp (entrada e saída) que passa pelo webhook. Fonte de verdade canônica das conversas. Imutável (sem updated_at) |
-| `duvida` | Mensagem classificada (4 categorias: academica/organizacional/emocional/social). Tem flag `consentimento_camada2` travada no momento da criação. Tem coluna `embedding JSONB nullable` criada mas NÃO populada no MVP (upgrade futuro de clustering bottom-up) |
+| `duvida` | Mensagem classificada (4 categorias: academica/organizacional/emocional/social). Tem flag `consentimento_camada2` travada no momento da criação. Tem coluna `embedding JSONB nullable` criada mas NÃO populada no MVP (upgrade futuro de clustering bottom-up). **`0004`: ganhou `coorte_id NOT NULL` (FK CASCADE); `turma_id` virou NULLABLE (FK → turma preservada, CASCADE).** |
 | `relatorio` | Relatório semanal por turma. UNIQUE(turma_id, semana_inicio). Token UUID com expiração de 14 dias. **Coluna `prosa_acao TEXT NULL` (migration 0003) guarda a prosa do Sonnet.** Subconceitos vivem DENTRO do JSONB `conteudo` (sem coluna nova): caminho real `conteudo.academica.unidades[].conceitos[].subconceitos[]` = `{nome, alunos_count, reincidentes_count}` |
 
 **Convenções compartilhadas:**
 - PKs UUID com `gen_random_uuid()`; timestamps em TIMESTAMPTZ
-- Trigger `atualizar_updated_at()` aplicado em 8 tabelas com `updated_at` (reusa função criada pela `0001`)
+- Trigger `atualizar_updated_at()` aplicado em 9 tabelas com `updated_at` (reusa função criada pela `0001`; `coorte` entrou na `0004`)
 - Ponte Camada 1↔Camada 2 = `aluno_telefone` STRING (não FK) em 4 tabelas: matricula, mensagem, duvida, consentimento_camada2
 - Schema vivo no Alembic (`alembic/versions/`). `sql/schema.sql` é referência histórica da Camada 1.
 
-Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 + 14 Camada 2, adicionados na Sessão CC #3). Os 14 modelos novos NÃO têm `relationship()` nesta fase — só colunas, FKs e UNIQUE constraints fiéis ao schema (validado campo a campo contra banco descartável). Relacionamentos entram quando uma sessão futura precisar.
+Modelos SQLAlchemy em `app/models/database.py` cobrem as 21 tabelas (6 Camada 1 + 15 Camada 2; `Coorte` adicionado na CC #7). Os modelos da Camada 2 NÃO têm `relationship()` nesta fase — só colunas, FKs e UNIQUE constraints fiéis ao schema (validado campo a campo contra banco descartável). Relacionamentos entram quando uma sessão futura precisar.
 
 ---
 
@@ -193,7 +194,7 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 
 ## 8. Estado atual (atualizar ao fim de cada sessão)
 
-**Última atualização:** 18/06/2026 (CC #6 **DEPLOYADA**: 0003 aplicada em produção via Opção B + rota `/r/{token}` viva + push `3fcd947` — ver subseção de deploy abaixo e §15)
+**Última atualização:** 30/06/2026 (CC #7 **DEPLOYADA**: migration `0004` — entidade `coorte` acima de `turma` — aplicada em produção via Opção B e verificada; ver subseção CC #7 abaixo e §15)
 
 ### ✅ Pronto e em produção
 
@@ -281,6 +282,21 @@ Modelos SQLAlchemy em `app/models/database.py` cobrem as 20 tabelas (6 Camada 1 
 - **`app/scripts/seed_demo_fin2.py`** — seed **VERSIONÁVEL** (ativo de venda, não dado real): Finanças II · turma 4DPA · Prof. Exemplo (nome genérico — não usar nome de pessoa real em dado de demo), ~41 alunos (~68% consentem), plano FIXO (não usa o parser), ~58 dúvidas de histórico + ~45 na semana-ref (pré-PI), idempotente. **NÃO hardcoda subconceito nem prosa** — a pipeline real produz. Semana-ref **29/03-04/04** (`--data-ref 2026-04-05`).
 - **Validado AO VIVO em `edubot_demo`** (Haiku + Sonnet reais, HTTP 200): 40 academicas/semana-ref, 39 casadas + 1 NULL honesto; subtemas com não-consolidação real ("5 alunos, 3 voltaram"); curva do histórico crescente (3→40); página renderiza com faixa LGPD no topo, subtema em destaque, vermelho na não-consolidação, prosa do Sonnet conectando à PI. Provado por SELECT bruto + screenshots.
 - **Polimento futuro anotado** (não feito): agrupar conceitos da mesma unidade sob um cabeçalho só (hoje "MODELO DE ÍNDICE ÚNICO" repete por card). O beta caiu sob "Decomposição do risco" sozinho ao subir o volume — sem matching manual.
+
+### ✅ Coorte acima de Turma — migration `0004` em produção (Sessão CC #7, 30/06/2026)
+
+> **DEPLOYADA em produção (30/06) via Opção B**, com o ritual da regra 15: um dump ANTERIOR de prod (estado 0003+seed) foi **provado por restore** virando o clone do ensaio (up/down); e um **backup pré-deploy** foi tirado no minuto do deploy como rede de rollback (não re-verificado por restore). Ver entrada CC #7 na §15.
+
+- **Entidade `coorte` nasce ACIMA de `turma`** (a "turma-Insper" / grade fechada que o `codigo_convite` abre). `turma` NÃO muda de significado: segue classe-de-matéria e unidade do relatório. Coorte agrupa turmas; cada turma mantém seu `professor_id`.
+- **Migration `0004_coorte_acima_de_turma.py`** (down_revision `0003`), aditiva, DDL à mão (sem autogenerate). Como `turma`/`matricula`/`duvida` já estavam POPULADAS, cada coluna NOT NULL nova entrou nullable → backfill → SET NOT NULL; `coorte` (vazia) nasceu NOT NULL inline:
+  - `coorte`: `curso_id` FK → curso (RESTRICT), `letra`, `semestre`, `codigo_convite` UNIQUE, `ativo`, timestamps; UNIQUE(curso_id, letra, semestre); trigger `trg_coorte_updated`.
+  - `turma`: ganhou `coorte_id NOT NULL` (FK → coorte RESTRICT) + índice `idx_turma_coorte`.
+  - `matricula`: **repontada** de `turma_id` → `coorte_id` — `turma_id` DROPADA, UNIQUE virou (coorte_id, aluno_telefone), FK → coorte CASCADE. Guarda `RAISE EXCEPTION` aborta se algum aluno estivesse em >1 turma da mesma coorte.
+  - `duvida`: ganhou `coorte_id NOT NULL` (FK CASCADE); `turma_id` virou NULLABLE (FK → turma preservada, CASCADE) + índice `idx_duvida_coorte`.
+- **Aplicada e verificada em produção:** transação atômica (`ON_ERROR_STOP=1`), COMMIT limpo, guarda não disparou. Backfill: 1 coorte, `turma` 1/1, `matricula` 41/41, `duvida` 104/104; `alembic_version='0004'`; `codigo_convite` no padrão `AUTO-…`. **Backup provado por restore** = o dump anterior (`prod_backup_0003_seed_20260630.dump`), que virou o clone do ensaio. **Backup pré-deploy** (rede de rollback, tirado imediatamente antes, **não** re-verificado por restore): `~/.edubot/prod_backup_0004_PRE_20260630_2228.dump`. Rollback: `downgrade()` da 0004 (provado no ensaio up/down do clone `edubot_clone_ensaio`).
+- **Model (`app/models/database.py`):** classe `Coorte` nova + `coorte_id` em `Turma`, `Matricula` repontada (perde `turma_id`), `Duvida` com `turma_id` `Optional` e `coorte_id` NOT NULL. Reflete o estado final do schema.
+- **Lição do ritual (Opção B):** no `alembic upgrade 0003:0004 --sql` offline, o próprio Alembic emite o `BEGIN/COMMIT` e o `UPDATE alembic_version` na mesma transação — **NÃO escrever à mão** (quebraria a contabilidade). Range `0003:0004` só vale offline; no online usa-se `upgrade head`.
+- **Débito ABERTO (não tocado nesta migration):** o agregador (CC #5) precisa passar a filtrar `WHERE turma_id IS NOT NULL`, já que `duvida.turma_id` agora pode ser NULL — ver §11. E o `seed_demo_fin2.py` precisa ser adaptado ao schema coorte (fora deste commit).
 
 ### ❌ Bloqueador ativo — Meta Dev Mode
 
@@ -425,6 +441,11 @@ Sequência de Sessões CC pendentes, em ordem de dependência:
 - **Instrumentar a taxa de classificação por categoria desde o dia 1 em produção.** Logar a distribuição das categorias do classificador (`academica` / `organizacional` / `social` / `emocional` / `nao_classificadas`) a cada mensagem processada. Razão: o seed mostrou NULL honesto baixo, mas o português real de aluno (abreviação, ironia, mistura de matérias) pode elevar o balde "não classificadas" além do que o seed sugere — sem instrumentação, isso só apareceria tarde, com o relatório já pobre. Detectar cedo
 - **Health check com alerta no webhook.** Hoje uma queda do serviço só é descoberta por reclamação de aluno. Falta um monitor ativo do `/health` (ou do webhook) que avise proativamente. Liga com a dívida "sem observabilidade" da subseção de infraestrutura abaixo. Estimativa: uma tarde
 
+### Dívidas técnicas registradas na Sessão CC #7 (30/06/2026)
+
+- **Agregador (CC #5) ainda assume `duvida.turma_id` NOT NULL.** A `0004` afrouxou `duvida.turma_id` para NULLABLE (a dúvida agora também se ancora na coorte via `coorte_id`). O matching dúvida→conceito/aula e as queries de agregação precisam passar a filtrar `WHERE turma_id IS NOT NULL` (ou migrar para agregar por `coorte_id`) — hoje uma dúvida com `turma_id` NULL entraria/quebraria silenciosamente. **Não foi tocado na 0004** (migration é só schema); é código de aplicação, próxima sessão
+- **`app/scripts/seed_demo_fin2.py` desatualizado vs. schema coorte.** O seed provavelmente insere `matricula`/`duvida` com `turma_id`, que a 0004 removeu/afrouxou — precisa ser adaptado (criar `coorte` + repontar `matricula.coorte_id`) antes de re-rodar pra demo de julho. Ficou intocado no working tree, FORA deste commit — revisão própria
+
 ### Dívidas técnicas registradas na Sessão CC #5 (07/06/2026)
 
 - **Matching é 1 chamada Haiku por turma/semana, sem cache.** Com muitas turmas isso vira custo/latência — reavaliar batch entre turmas ou cache quando houver volume real
@@ -546,6 +567,16 @@ git diff app/routers/webhook.py
 ---
 
 ## 15. Histórico de mudanças importantes
+
+### 30/06/2026 — Deploy CC #7: migration `0004` (coorte acima de turma) em produção
+
+- **Entidade `coorte`** nasce ACIMA de `turma` (a "turma-Insper" / grade fechada do `codigo_convite`). `turma` intacta em significado (classe-de-matéria, unidade do relatório). `matricula` repontada de `turma` → `coorte` (perde `turma_id`); `duvida` ganha `coorte_id NOT NULL` e `turma_id` vira NULLABLE (FK preservada).
+- **Migration `0004_coorte_acima_de_turma.py`** (down_revision `0003`), aditiva, DDL à mão (sem autogenerate — não enxerga o índice UNIQUE parcial da 0003 e injetaria regressão). Padrão populado: coluna NOT NULL nova entra nullable → backfill → SET NOT NULL; `coorte` (vazia) nasce NOT NULL inline. Guarda `RAISE EXCEPTION` (aluno em >1 turma da mesma coorte) no up; guarda simétrica (>1 turma por coorte) no down.
+- **Ritual da regra 15 cumprido:** um `pg_dump -Fc` de prod (via `DATABASE_PUBLIC_URL`, host `proxy.rlwy.net`) do estado 0003+seed — `~/.edubot/prod_backup_0003_seed_20260630.dump` — foi **provado por restore** num clone Postgres 18 descartável (`edubot_clone_ensaio`, porta 5433): **prova por contagem** (21 tabelas, `alembic_version='0003'`, função + 8 triggers `updated_at`, `coorte` ausente) e **ensaio up/down** da 0004 (upgrade `head` + `downgrade -1` limpos, backfill 1/41/104 batendo, guarda sem disparar). Só então produção. Cliente `pg_dump`/`psql` 18.4 (libpq); prod é PG 18.3.
+- **Aplicação em produção (Opção B):** `alembic upgrade 0003:0004 --sql` offline gerou `deploy_0004.sql` (revisado à parte) → `psql "$URL" -v ON_ERROR_STOP=1 -f deploy_0004.sql`. Transação atômica, COMMIT limpo, sem ERROR, guarda não disparou. Verificado: 1 coorte, `coorte_id` sem NULL em turma/matricula/duvida, `matricula`=41, `duvida`=104, `alembic_version`='0004', `codigo_convite`='AUTO-…'. Backup pré-deploy (rede de rollback, tirado no minuto do deploy, **não** re-verificado por restore): `~/.edubot/prod_backup_0004_PRE_20260630_2228.dump`; SQL aplicado: `~/.edubot/deploy_0004.sql`.
+- **Lição (Opção B):** o `BEGIN/COMMIT` e o `UPDATE alembic_version` vêm do próprio Alembic no `--sql` offline — não escrever à mão. Range `0003:0004` só offline; online usa `upgrade head`.
+- **Higiene do segredo:** a `DATABASE_PUBLIC_URL` foi lida via `$(cat ~/.edubot/.prod_url)`, nunca ecoada, e `shred -u` ao fim; nenhum arquivo em `~/.edubot/` contém a URL. Deploy do Railway roda só `uvicorn` (sem Alembic) — bloqueio incondicional do `env.py` contra Railway intacto.
+- **Commit:** ver `git log` (mudança de código + este doc no mesmo commit). `seed_demo_fin2.py` deliberadamente FORA do commit — adaptação ao schema coorte é revisão própria (ver §11).
 
 ### 18/06/2026 — Deploy CC #6: migration 0003 em produção + rota `/r/{token}` viva (sessões A/B/C/D)
 
